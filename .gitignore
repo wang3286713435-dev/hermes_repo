@@ -1,9 +1,13 @@
 /venv/
 /_pycache/
+.DS_Store
+.venv*/
 *.pyc*
+*.pyo
 __pycache__/
 .venv/
 .vscode/
+.idea/
 .env
 .env.local
 .env.development.local

@@ -678,6 +678,18 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Enterprise memory kernel -- request-scoped enterprise retrieval owned by
+    # Hermes core, not by the legacy plugin/provider path above.
+    "memory_kernel": {
+        "enabled": False,
+        "hermes_memory_path": "~/Hermes_memory",
+        "top_k": 8,
+        "timeout_ms": 3000,
+        "fail_open": True,
+        "inject_context": True,
+        "citation_required": True,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

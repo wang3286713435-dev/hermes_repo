@@ -417,6 +417,21 @@ memory:
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
+# Enterprise Memory Kernel
+# =============================================================================
+# Request-scoped enterprise retrieval owned by Hermes core. Retrieved context is
+# injected into the current request only and never written into the cached
+# system prompt.
+memory_kernel:
+  enabled: false
+  hermes_memory_path: "~/Hermes_memory"
+  top_k: 8
+  timeout_ms: 3000
+  fail_open: true
+  inject_context: true
+  citation_required: true
+
+# =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
 # Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are
