@@ -8833,6 +8833,31 @@ class AIAgent:
                     _memory_kernel_filters = self.request_overrides.get("memory_filters")
                 if not isinstance(_memory_kernel_filters, dict):
                     _memory_kernel_filters = {}
+                _document_scope_trace = {}
+                _allowed_document_ids = []
+                _cross_document_allowed = False
+                try:
+                    if hasattr(self._memory_kernel, "resolve_document_scope"):
+                        _scope_decision = self._memory_kernel.resolve_document_scope(
+                            session_id=self.session_id or "",
+                            query=original_user_message,
+                            filters=_memory_kernel_filters,
+                        )
+                        _memory_kernel_filters = _scope_decision.filters
+                        _document_scope_trace = _scope_decision.trace
+                        _allowed_document_ids = _scope_decision.allowed_document_ids
+                        _cross_document_allowed = _scope_decision.cross_document_allowed
+                except Exception as exc:
+                    logger.warning("Enterprise memory document scope resolution failed: %s", exc)
+                    _document_scope_trace = {
+                        "scope_resolution_status": "scope_resolution_failed",
+                        "document_scope_source": "error",
+                        "document_scope_changed": False,
+                        "cross_document_allowed": False,
+                        "active_document_id": None,
+                        "active_document_title": None,
+                        "error": str(exc),
+                    }
                 _memory_kernel_request = KernelRequest(
                     query=original_user_message,
                     session_id=self.session_id or "",
@@ -8845,6 +8870,9 @@ class AIAgent:
                     enable_hybrid=bool(_memory_kernel_options.get("enable_hybrid", True)),
                     debug=bool(_memory_kernel_options.get("debug", False)),
                     query_vector=_memory_kernel_options.get("query_vector"),
+                    document_scope=_document_scope_trace,
+                    allowed_document_ids=_allowed_document_ids,
+                    cross_document_allowed=_cross_document_allowed,
                 )
                 _memory_kernel_result = self._memory_kernel.start_turn(_memory_kernel_request)
                 _memory_kernel_context = _memory_kernel_result.context_block or ""

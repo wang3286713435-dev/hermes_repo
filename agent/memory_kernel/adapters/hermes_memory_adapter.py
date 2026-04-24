@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,8 @@ class HermesMemoryAdapter:
         self._kernel_cls = None
         self._request_cls = None
         self._filter_cls = None
+        self._document_cls = None
+        self._loaded_source_mtime = 0.0
         self._load()
 
     @property
@@ -48,6 +52,7 @@ class HermesMemoryAdapter:
         if not self._available:
             return RetrievalOutput(backend="unavailable", trace={"error": "Hermes_memory adapter is unavailable"})
 
+        self._reload_if_needed()
         db = self._session_local()
         try:
             filters = self._filter_cls(**(request.filters or {}))
@@ -84,7 +89,31 @@ class HermesMemoryAdapter:
         finally:
             db.close()
 
-    def _load(self) -> None:
+    def resolve_document_titles(self, titles: list[str], filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        if not self._available or self._document_cls is None:
+            return []
+
+        self._reload_if_needed()
+        db = self._session_local()
+        try:
+            resolved: list[dict[str, Any]] = []
+            scoped_filters = filters or {}
+            for title in titles:
+                document = self._resolve_one_title(db, title, scoped_filters)
+                if document is not None:
+                    resolved.append(
+                        {
+                            "document_id": str(document.id),
+                            "title": str(document.title),
+                            "source_type": getattr(document, "source_type", None),
+                            "document_type": getattr(document, "document_type", None),
+                        }
+                    )
+            return resolved
+        finally:
+            db.close()
+
+    def _load(self, force_reload: bool = False) -> None:
         root = Path(self.config.hermes_memory_path).expanduser().resolve()
         if not root.exists():
             logger.info("Hermes memory kernel path does not exist: %s", root)
@@ -93,19 +122,92 @@ class HermesMemoryAdapter:
         if root_str not in sys.path:
             sys.path.insert(0, root_str)
         try:
-            from app.db.session import SessionLocal
-            from app.memory_kernel.contracts import MemoryKernelRequest
-            from app.memory_kernel.kernel import MemoryKernel
-            from app.schemas.retrieval import RetrievalFilter
+            module_names = [
+                "app.db.session",
+                "app.models.document",
+                "app.schemas.retrieval",
+                "app.memory_kernel.contracts",
+                "app.memory_kernel.retrieval_orchestrator",
+                "app.memory_kernel.kernel",
+                "app.services.retrieval.service",
+            ]
+            importlib.invalidate_caches()
+            loaded_modules = {}
+            for name in module_names:
+                if force_reload and name in sys.modules:
+                    loaded_modules[name] = importlib.reload(sys.modules[name])
+                else:
+                    loaded_modules[name] = importlib.import_module(name)
         except Exception as exc:
             logger.warning("Hermes_memory adapter import failed: %s", exc)
             return
 
-        self._session_local = SessionLocal
-        self._kernel_cls = MemoryKernel
-        self._request_cls = MemoryKernelRequest
-        self._filter_cls = RetrievalFilter
+        self._session_local = loaded_modules["app.db.session"].SessionLocal
+        self._kernel_cls = loaded_modules["app.memory_kernel.kernel"].MemoryKernel
+        self._request_cls = loaded_modules["app.memory_kernel.contracts"].MemoryKernelRequest
+        self._filter_cls = loaded_modules["app.schemas.retrieval"].RetrievalFilter
+        self._document_cls = loaded_modules["app.models.document"].Document
+        self._loaded_source_mtime = self._source_tree_mtime(root)
         self._available = True
+
+    def _reload_if_needed(self) -> None:
+        root = Path(self.config.hermes_memory_path).expanduser().resolve()
+        current_mtime = self._source_tree_mtime(root)
+        if current_mtime > self._loaded_source_mtime:
+            self._load(force_reload=True)
+
+    def _source_tree_mtime(self, root: Path) -> float:
+        candidate_paths = [
+            root / "app/db/session.py",
+            root / "app/models/document.py",
+            root / "app/schemas/retrieval.py",
+            root / "app/memory_kernel/contracts.py",
+            root / "app/memory_kernel/retrieval_orchestrator.py",
+            root / "app/memory_kernel/kernel.py",
+            root / "app/services/retrieval/service.py",
+        ]
+        mtimes = []
+        for path in candidate_paths:
+            try:
+                mtimes.append(path.stat().st_mtime)
+            except OSError:
+                continue
+        return max(mtimes) if mtimes else 0.0
+
+    def _resolve_one_title(self, db: Any, title: str, filters: dict[str, Any]) -> Any | None:
+        target = self._normalize_title(title)
+        if not target:
+            return None
+
+        query = db.query(self._document_cls)
+        if hasattr(self._document_cls, "status"):
+            query = query.filter(self._document_cls.status == "active")
+        if filters.get("source_type") and hasattr(self._document_cls, "source_type"):
+            query = query.filter(self._document_cls.source_type == filters["source_type"])
+        if filters.get("document_type") and hasattr(self._document_cls, "document_type"):
+            query = query.filter(self._document_cls.document_type == filters["document_type"])
+        try:
+            candidates = query.order_by(self._document_cls.updated_at.desc()).limit(200).all()
+        except Exception:
+            candidates = query.limit(200).all()
+
+        exact = []
+        partial = []
+        for document in candidates:
+            candidate_title = self._normalize_title(str(getattr(document, "title", "") or ""))
+            if candidate_title == target:
+                exact.append(document)
+            elif target in candidate_title or candidate_title in target:
+                partial.append(document)
+        if exact:
+            return exact[0]
+        if partial:
+            return partial[0]
+        return None
+
+    def _normalize_title(self, title: str) -> str:
+        text = re.sub(r"\s+", "", title or "").lower()
+        return text.strip("《》「」『』\"'，。！？:：")
 
     def _item_from_raw(self, raw: Any) -> KernelItem:
         data = _model_dump(raw)

@@ -30,6 +30,9 @@ class KernelRequest:
     enable_hybrid: bool = True
     debug: bool = False
     query_vector: list[float] | None = None
+    document_scope: dict[str, Any] = field(default_factory=dict)
+    allowed_document_ids: list[str] = field(default_factory=list)
+    cross_document_allowed: bool = False
 
 
 @dataclass(frozen=True)
