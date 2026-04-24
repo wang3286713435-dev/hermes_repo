@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent.memory_kernel.config import MemoryKernelConfig
+from agent.memory_kernel.context_builder import ContextBuilder
 from agent.memory_kernel.interfaces import KernelCitation, KernelItem, KernelRequest, KernelResult, QueryRoute, RetrievalOutput
 from agent.memory_kernel.kernel import MemoryKernel
 from agent.memory_kernel.session_document_scope import (
@@ -84,6 +86,186 @@ def test_session_document_scope_detects_unquoted_compare_slash():
 
     assert decision.cross_document_allowed is True
     assert decision.allowed_document_ids == ["doc-a", "doc-b"]
+
+
+def test_session_file_alias_binds_title_to_alias():
+    store = SessionDocumentScopeStore()
+
+    decision = store.resolve(session_id="s1", query="把《A标书》设为 @主标书", filters={}, resolver=_resolver)
+
+    assert decision.filters["document_id"] == "doc-a"
+    assert decision.trace["alias_resolution"]["status"] == "alias_bound"
+    assert decision.trace["alias"] == "主标书"
+    assert decision.trace["resolved_document_id"] == "doc-a"
+    assert decision.trace["resolved_title"] == "A标书"
+    assert decision.trace["alias_scope"] == "session"
+
+
+def test_session_file_alias_binds_current_active_document():
+    store = SessionDocumentScopeStore()
+
+    store.resolve(session_id="s1", query="请围绕《B标书》回答", filters={}, resolver=_resolver)
+    decision = store.resolve(session_id="s1", query="把当前文件设为 @交付标准", filters={}, resolver=_resolver)
+
+    assert decision.filters["document_id"] == "doc-b"
+    assert decision.trace["alias_resolution"]["status"] == "alias_bound"
+    assert decision.trace["resolved_document_id"] == "doc-b"
+    assert decision.trace["document_scope_source"] == "file_alias"
+
+
+def test_session_file_alias_resolves_to_scoped_retrieval():
+    store = SessionDocumentScopeStore()
+    store.resolve(session_id="s1", query="把《A标书》设为 @主标书", filters={}, resolver=_resolver)
+    store.resolve(session_id="s1", query="切到《B标书》继续", filters={}, resolver=_resolver)
+
+    decision = store.resolve(session_id="s1", query="围绕 @主标书 回答总工期", filters={}, resolver=_resolver)
+
+    assert decision.filters["document_id"] == "doc-a"
+    assert decision.allowed_document_ids == ["doc-a"]
+    assert decision.trace["scope_resolution_status"] == "alias_resolved"
+    assert decision.trace["document_scope_changed"] is True
+    assert decision.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+
+
+def test_session_file_alias_compare_resolves_two_aliases():
+    store = SessionDocumentScopeStore()
+    store.resolve(session_id="s1", query="把《A标书》设为 @主标书", filters={}, resolver=_resolver)
+    store.resolve(session_id="s1", query="把《B标书》设为 @交付标准", filters={}, resolver=_resolver)
+
+    decision = store.resolve(session_id="s1", query="对比 @主标书 和 @交付标准", filters={}, resolver=_resolver)
+
+    assert "document_id" not in decision.filters
+    assert decision.cross_document_allowed is True
+    assert decision.allowed_document_ids == ["doc-a", "doc-b"]
+    assert decision.trace["scope_resolution_status"] == "multi_document_alias_resolved"
+    assert decision.trace["compare_aliases"] == ["主标书", "交付标准"]
+    assert decision.trace["compare_document_ids"] == ["doc-a", "doc-b"]
+
+
+def test_session_file_alias_missing_does_not_reuse_active_document():
+    store = SessionDocumentScopeStore()
+    store.resolve(session_id="s1", query="请围绕《B标书》回答", filters={}, resolver=_resolver)
+
+    decision = store.resolve(session_id="s1", query="围绕 @不存在 回答", filters={}, resolver=_resolver)
+
+    assert "document_id" not in decision.filters
+    assert decision.allowed_document_ids == []
+    assert decision.trace["scope_resolution_status"] == "alias_missing"
+    assert decision.trace["alias_missing"] is True
+    assert decision.trace["active_document_id"] == "doc-b"
+    assert decision.trace["suppress_retrieval"] is True
+
+
+def test_session_file_alias_missing_suppresses_kernel_retrieval():
+    store = SessionDocumentScopeStore()
+    decision = store.resolve(session_id="s1", query="围绕 @不存在 回答", filters={}, resolver=_resolver)
+    kernel = MemoryKernel.__new__(MemoryKernel)
+
+    retrieval = kernel._retrieve_with_document_scope(
+        KernelRequest(query="围绕 @不存在 回答", session_id="s1"),
+        QueryRoute("enterprise_retrieval", True, "test"),
+        decision,
+    )
+
+    assert retrieval.backend == "document_scope_suppressed"
+    assert retrieval.trace["scope_retrieval_suppressed"] is True
+
+
+def test_session_file_alias_binds_after_same_turn_retrieval():
+    class FakeRetrieval:
+        def resolve_document_titles(self, titles, filters):
+            return _resolver(titles, filters)
+
+        def retrieve(self, request, route):
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="a1",
+                        document_id="doc-a",
+                        version_id="v1",
+                        text="A evidence",
+                        source_name="A标书",
+                    )
+                ],
+                citations=[KernelCitation(document_id="doc-a", version_id="v1", chunk_id="a1", source_name="A标书")],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.retrieval = FakeRetrieval()
+
+    result = kernel.start_turn(KernelRequest(query="把当前文件设为 @主标书", session_id="s1"))
+    decision = kernel.resolve_document_scope(session_id="s1", query="围绕 @主标书 回答", filters={})
+
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert result.trace["resolved_document_id"] == "doc-a"
+    assert decision.filters["document_id"] == "doc-a"
+    assert "Alias handling is done by Hermes session state" in result.context_block
+
+
+def test_alias_scope_forces_retrieval_even_without_router_hint():
+    class FakeRetrieval:
+        def __init__(self):
+            self.calls = []
+
+        def resolve_document_titles(self, titles, filters):
+            return _resolver(titles, filters)
+
+        def retrieve(self, request, route):
+            self.calls.append((request, route))
+            return RetrievalOutput(
+                items=[KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="A evidence")],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+    kernel.document_scope.resolve(session_id="s1", query="把《A标书》设为 @主标书", filters={}, resolver=_resolver)
+
+    result = kernel.start_turn(KernelRequest(query="围绕 @主标书 回答", session_id="s1"))
+
+    assert fake_retrieval.calls
+    assert fake_retrieval.calls[0][1].needs_retrieval is True
+    assert fake_retrieval.calls[0][0].filters["document_id"] == "doc-a"
+    assert result.trace["alias_resolution"]["status"] == "alias_resolved"
+
+
+def test_session_file_alias_rebind_is_diagnostic():
+    store = SessionDocumentScopeStore()
+
+    store.resolve(session_id="s1", query="把《A标书》设为 @主标书", filters={}, resolver=_resolver)
+    decision = store.resolve(session_id="s1", query="把《B标书》设为 @主标书", filters={}, resolver=_resolver)
+
+    assert decision.filters["document_id"] == "doc-b"
+    assert decision.trace["alias_resolution"]["status"] == "alias_bound"
+    assert decision.trace["alias_conflict"] is True
+    assert decision.trace["resolved_document_id"] == "doc-b"
+
+
+def test_alias_context_block_reports_missing_without_fake_evidence():
+    builder = ContextBuilder()
+    retrieval = RetrievalOutput(
+        backend="document_scope_suppressed",
+        trace={
+            "alias_resolution": {
+                "status": "alias_missing",
+                "alias": "主标书",
+                "resolved_document_id": None,
+                "resolved_title": None,
+                "alias_scope": "session",
+                "alias_missing": True,
+            },
+            "scope_retrieval_suppressed": True,
+        },
+    )
+
+    context = builder.build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "Alias handling is done by Hermes session state" in context
+    assert "alias_resolution.status=alias_missing" in context
+    assert "Retrieved evidence:" not in context
+    assert "do not answer from history memory as document evidence" in context
 
 
 def test_document_scope_filter_removes_third_document_evidence():

@@ -6,10 +6,10 @@ from dataclasses import replace
 from .citation_engine import CitationEngine
 from .config import MemoryKernelConfig
 from .context_builder import ContextBuilder
-from .interfaces import KernelRequest, KernelResult, RetrievalOutput
+from .interfaces import KernelRequest, KernelResult, QueryRoute, RetrievalOutput
 from .orchestrator import RetrievalOrchestrator
 from .router import QueryRouter
-from .session_document_scope import DocumentScopeDecision, SessionDocumentScopeStore
+from .session_document_scope import DocumentScopeDecision, ResolvedDocument, SessionDocumentScopeStore
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class MemoryKernel:
 
         route = self.router.route(request.query)
         scope_decision = self._scope_decision_from_request(request)
+        route = self._route_with_scope_requirement(route, scope_decision, request)
         scoped_request = replace(
             request,
             filters=scope_decision.filters,
@@ -59,6 +60,11 @@ class MemoryKernel:
             cross_document_allowed=scope_decision.cross_document_allowed,
         )
         retrieval = self._retrieve_with_document_scope(scoped_request, route, scope_decision)
+        scope_decision = self.document_scope.finalize_pending_alias_binding(
+            session_id=request.session_id,
+            decision=scope_decision,
+            documents=self._documents_from_retrieval(retrieval),
+        )
         retrieval = self._filter_retrieval_by_document_scope(retrieval, scope_decision)
         citations = self.citations.normalize_citations(retrieval.citations, retrieval.items)
         trace = dict(retrieval.trace or {})
@@ -129,11 +135,42 @@ class MemoryKernel:
                 trace=dict(request.document_scope or {}),
                 allowed_document_ids=list(request.allowed_document_ids or []),
                 cross_document_allowed=bool(request.cross_document_allowed),
+                suppress_retrieval=bool((request.document_scope or {}).get("suppress_retrieval", False)),
             )
         return self.resolve_document_scope(
             session_id=request.session_id,
             query=request.query,
             filters=request.filters,
+        )
+
+    def _route_with_scope_requirement(
+        self,
+        route: QueryRoute,
+        scope_decision: DocumentScopeDecision,
+        request: KernelRequest,
+    ) -> QueryRoute:
+        if route.needs_retrieval:
+            return route
+        scope_status = scope_decision.trace.get("scope_resolution_status")
+        scope_source = scope_decision.trace.get("document_scope_source")
+        requires_context = bool(
+            scope_decision.allowed_document_ids
+            or scope_decision.cross_document_allowed
+            or scope_decision.suppress_retrieval
+            or scope_decision.trace.get("alias_resolution")
+            or (
+                scope_source not in {None, "none", "active_project_task"}
+                and scope_status not in {None, "project_task_hint_active", "unscoped"}
+            )
+        )
+        if not requires_context:
+            return route
+        return replace(
+            route,
+            route_type="enterprise_retrieval",
+            needs_retrieval=True,
+            reason=f"{route.reason}; document scope requires enterprise retrieval context",
+            mode=request.retrieval_mode,
         )
 
     def _filter_retrieval_by_document_scope(
@@ -177,7 +214,8 @@ class MemoryKernel:
         retrieval: RetrievalOutput,
         scope_decision: DocumentScopeDecision,
     ) -> dict:
-        enriched = dict(trace or {})
+        enriched = dict(scope_decision.trace or {})
+        enriched.update(trace or {})
         evidence_document_ids = self._returned_document_ids(retrieval.items, retrieval.citations)
         enriched["retrieval_evidence_document_ids"] = evidence_document_ids
         enriched["history_memory_used"] = bool(scope_decision.trace.get("history_memory_used", False))
@@ -230,6 +268,14 @@ class MemoryKernel:
         route,
         scope_decision: DocumentScopeDecision,
     ) -> RetrievalOutput:
+        if scope_decision.suppress_retrieval:
+            return RetrievalOutput(
+                backend="document_scope_suppressed",
+                trace={
+                    "scope_retrieval_suppressed": True,
+                    "scope_resolution_status": scope_decision.trace.get("scope_resolution_status"),
+                },
+            )
         if scope_decision.cross_document_allowed and len(scope_decision.allowed_document_ids or []) >= 2:
             return self._retrieve_multi_document_scope(request, route, scope_decision)
         return self.retrieval.retrieve(request, route)
@@ -322,3 +368,23 @@ class MemoryKernel:
         ids = [item.document_id for item in items if item.document_id]
         ids.extend(citation.document_id for citation in citations if citation.document_id)
         return list(dict.fromkeys(ids))
+
+    def _documents_from_retrieval(self, retrieval: RetrievalOutput) -> list[ResolvedDocument]:
+        by_id: dict[str, ResolvedDocument] = {}
+        for item in retrieval.items or []:
+            if item.document_id and item.document_id not in by_id:
+                by_id[item.document_id] = ResolvedDocument(
+                    document_id=item.document_id,
+                    title=item.source_name or item.document_id,
+                    version_id=item.version_id or None,
+                    source_name=item.source_name,
+                )
+        for citation in retrieval.citations or []:
+            if citation.document_id and citation.document_id not in by_id:
+                by_id[citation.document_id] = ResolvedDocument(
+                    document_id=citation.document_id,
+                    title=citation.source_name or citation.document_id,
+                    version_id=citation.version_id or None,
+                    source_name=citation.source_name,
+                )
+        return list(by_id.values())

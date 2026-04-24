@@ -20,6 +20,20 @@ class DocumentScopeState:
 class ResolvedDocument:
     document_id: str
     title: str
+    version_id: str | None = None
+    source_name: str | None = None
+
+
+@dataclass(frozen=True)
+class FileAliasBinding:
+    alias: str
+    document_id: str
+    title: str
+    version_id: str | None = None
+    source_name: str | None = None
+    alias_scope: str = "session"
+    scope_source: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -28,6 +42,7 @@ class DocumentScopeDecision:
     trace: dict[str, Any]
     allowed_document_ids: list[str] = field(default_factory=list)
     cross_document_allowed: bool = False
+    suppress_retrieval: bool = False
 
 
 DocumentTitleResolver = Callable[[list[str], dict[str, Any]], list[ResolvedDocument | dict[str, Any]]]
@@ -37,6 +52,8 @@ class SessionDocumentScopeStore:
     """In-process active document scope store keyed by Hermes session id."""
 
     _QUOTED_TITLE_RE = re.compile(r"[《「『\"]([^》」』\"]+)[》」』\"]")
+    _ALIAS_RE = re.compile(r"@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
+    _ALIAS_BIND_RE = re.compile(r"(?:设为|命名为|取名为|叫做|叫)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
     _SWITCH_TITLE_RE = re.compile(
         r"(?:围绕|切到|切换到|切回|回到)\s*(.+?)(?:文件|文档|资料)?(?:回答|继续|$|[，。！？\n])"
     )
@@ -48,6 +65,7 @@ class SessionDocumentScopeStore:
 
     def __init__(self) -> None:
         self._states: dict[str, DocumentScopeState] = {}
+        self._aliases: dict[str, dict[str, FileAliasBinding]] = {}
 
     def get(self, session_id: str) -> DocumentScopeState:
         return self._states.get(session_id or "", DocumentScopeState())
@@ -82,14 +100,38 @@ class SessionDocumentScopeStore:
                 cross_document_allowed=False,
             )
 
+        alias_binding = self._extract_alias_binding(query or "")
+        if alias_binding:
+            return self._resolve_alias_binding(
+                session_key=session_key,
+                query=query or "",
+                filters=incoming_filters,
+                resolver=resolver,
+                state=state,
+                alias=alias_binding,
+            )
+
+        aliases = self._extract_aliases(query or "")
+        is_alias_compare = bool(len(aliases) >= 2 and self._is_compare_query(query or ""))
+        if is_alias_compare:
+            return self._resolve_alias_compare(
+                session_key=session_key,
+                filters=incoming_filters,
+                state=state,
+                aliases=aliases[:2],
+            )
+        if aliases:
+            return self._resolve_single_alias_reference(
+                session_key=session_key,
+                filters=incoming_filters,
+                state=state,
+                alias=aliases[0],
+            )
+
         titles = self._extract_title_candidates(query or "")
         is_compare = bool(
             len(titles) >= 2
-            and (
-                self._COMPARE_RE.search(query or "")
-                or self._DIFFERENCE_RE.search(query or "")
-                or " 与 " in f" {query or ''} "
-            )
+            and self._is_compare_query(query or "")
         )
         if is_compare:
             documents = self._resolve_titles(titles[:2], incoming_filters, resolver)
@@ -258,8 +300,377 @@ class SessionDocumentScopeStore:
             document_id = raw.get("document_id") or raw.get("id")
             title = raw.get("title") or raw.get("source_name")
             if document_id and title:
-                return ResolvedDocument(document_id=str(document_id), title=str(title))
+                return ResolvedDocument(
+                    document_id=str(document_id),
+                    title=str(title),
+                    version_id=str(raw["version_id"]) if raw.get("version_id") else None,
+                    source_name=str(raw["source_name"]) if raw.get("source_name") else None,
+                )
         return None
+
+    def _extract_alias_binding(self, query: str) -> str | None:
+        match = self._ALIAS_BIND_RE.search(query or "")
+        return self._normalize_alias(match.group(1)) if match else None
+
+    def _extract_aliases(self, query: str) -> list[str]:
+        return self._unique([self._normalize_alias(match.group(1)) for match in self._ALIAS_RE.finditer(query or "")])
+
+    def _normalize_alias(self, alias: str) -> str:
+        return (alias or "").strip().lstrip("@")
+
+    def _session_aliases(self, session_key: str) -> dict[str, FileAliasBinding]:
+        return self._aliases.setdefault(session_key, {})
+
+    def _get_alias(self, session_key: str, alias: str) -> FileAliasBinding | None:
+        return self._session_aliases(session_key).get(self._normalize_alias(alias))
+
+    def _resolve_alias_binding(
+        self,
+        *,
+        session_key: str,
+        query: str,
+        filters: dict[str, Any],
+        resolver: DocumentTitleResolver,
+        state: DocumentScopeState,
+        alias: str,
+    ) -> DocumentScopeDecision:
+        normalized_alias = self._normalize_alias(alias)
+        titles = self._extract_title_candidates(query)
+        documents = self._resolve_titles([titles[0]], filters, resolver) if titles else []
+        document: ResolvedDocument | None = documents[0] if documents else None
+        source = "alias_bind_title"
+
+        is_current_document_binding = bool(self._CURRENT_DOC_RE.search(query or ""))
+        if document is None and is_current_document_binding:
+            if state.active_document_id:
+                document = ResolvedDocument(
+                    document_id=state.active_document_id,
+                    title=state.active_document_title or state.active_document_id,
+                )
+                source = "alias_bind_current_document"
+            else:
+                return self._decision(
+                    filters=filters,
+                    state=state,
+                    source="file_alias",
+                    status="alias_bind_pending_current_retrieval",
+                    changed=False,
+                    allowed_document_ids=[],
+                    cross_document_allowed=False,
+                    alias_trace=self._alias_trace(
+                        status="alias_bind_pending_current_retrieval",
+                        alias=normalized_alias,
+                        alias_missing=False,
+                        alias_conflict=False,
+                        bind_failure_reason=None,
+                    ),
+                )
+
+        existing = self._get_alias(session_key, normalized_alias)
+        alias_conflict = bool(existing and document and existing.document_id != document.document_id)
+        if document is None:
+            return self._decision(
+                filters=filters,
+                state=state,
+                source="file_alias",
+                status="alias_bind_failed",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                alias_trace=self._alias_trace(
+                    status="alias_bind_failed",
+                    alias=normalized_alias,
+                    alias_missing=False,
+                    alias_conflict=False,
+                    bind_failure_reason="no_active_document",
+                ),
+                suppress_retrieval=True,
+            )
+
+        binding = FileAliasBinding(
+            alias=normalized_alias,
+            document_id=document.document_id,
+            title=document.title,
+            version_id=document.version_id,
+            source_name=document.source_name,
+            alias_scope="session",
+            scope_source=source,
+            updated_at=self._now(),
+        )
+        self._session_aliases(session_key)[normalized_alias] = binding
+        new_state = DocumentScopeState(
+            active_document_id=document.document_id,
+            active_document_title=document.title,
+            active_project=state.active_project,
+            active_task=state.active_task,
+            scope_source="file_alias",
+            updated_at=self._now(),
+        )
+        self._states[session_key] = new_state
+        scoped_filters = {**filters, "document_id": document.document_id}
+        return self._decision(
+            filters=scoped_filters,
+            state=new_state,
+            source="file_alias",
+            status="alias_bound",
+            changed=state.active_document_id != document.document_id,
+            allowed_document_ids=[document.document_id],
+            cross_document_allowed=False,
+            alias_trace=self._alias_trace(
+                status="alias_bound",
+                alias=normalized_alias,
+                binding=binding,
+                alias_conflict=alias_conflict,
+            ),
+        )
+
+    def _resolve_single_alias_reference(
+        self,
+        *,
+        session_key: str,
+        filters: dict[str, Any],
+        state: DocumentScopeState,
+        alias: str,
+    ) -> DocumentScopeDecision:
+        normalized_alias = self._normalize_alias(alias)
+        binding = self._get_alias(session_key, normalized_alias)
+        if binding is None:
+            return self._decision(
+                filters=filters,
+                state=state,
+                source="file_alias",
+                status="alias_missing",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                alias_trace=self._alias_trace(
+                    status="alias_missing",
+                    alias=normalized_alias,
+                    alias_missing=True,
+                ),
+                suppress_retrieval=True,
+            )
+
+        new_state = DocumentScopeState(
+            active_document_id=binding.document_id,
+            active_document_title=binding.title,
+            active_project=state.active_project,
+            active_task=state.active_task,
+            scope_source="file_alias",
+            updated_at=self._now(),
+        )
+        self._states[session_key] = new_state
+        scoped_filters = {**filters, "document_id": binding.document_id}
+        return self._decision(
+            filters=scoped_filters,
+            state=new_state,
+            source="file_alias",
+            status="alias_resolved",
+            changed=state.active_document_id != binding.document_id,
+            allowed_document_ids=[binding.document_id],
+            cross_document_allowed=False,
+            alias_trace=self._alias_trace(
+                status="alias_resolved",
+                alias=normalized_alias,
+                binding=binding,
+            ),
+        )
+
+    def _resolve_alias_compare(
+        self,
+        *,
+        session_key: str,
+        filters: dict[str, Any],
+        state: DocumentScopeState,
+        aliases: list[str],
+    ) -> DocumentScopeDecision:
+        normalized_aliases = [self._normalize_alias(alias) for alias in aliases]
+        bindings = [self._get_alias(session_key, alias) for alias in normalized_aliases]
+        missing_aliases = [alias for alias, binding in zip(normalized_aliases, bindings) if binding is None]
+        if missing_aliases:
+            return self._decision(
+                filters=filters,
+                state=state,
+                source="file_alias_compare",
+                status="alias_compare_partial_resolution",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=True,
+                alias_trace=self._alias_trace(
+                    status="alias_compare_partial_resolution",
+                    alias=normalized_aliases,
+                    alias_missing=True,
+                    compare_aliases=normalized_aliases,
+                    missing_aliases=missing_aliases,
+                ),
+                suppress_retrieval=True,
+            )
+
+        resolved_bindings = [binding for binding in bindings if binding is not None]
+        allowed_ids = self._unique([binding.document_id for binding in resolved_bindings])
+        return self._decision(
+            filters=filters,
+            state=state,
+            source="file_alias_compare",
+            status="multi_document_alias_resolved",
+            changed=False,
+            allowed_document_ids=allowed_ids,
+            cross_document_allowed=True,
+            alias_trace=self._alias_trace(
+                status="multi_document_alias_resolved",
+                alias=normalized_aliases,
+                binding=resolved_bindings[0] if resolved_bindings else None,
+                compare_aliases=normalized_aliases,
+                compare_bindings=resolved_bindings,
+            ),
+        )
+
+    def _alias_trace(
+        self,
+        *,
+        status: str,
+        alias: str | list[str],
+        binding: FileAliasBinding | None = None,
+        alias_missing: bool = False,
+        alias_conflict: bool = False,
+        alias_stale_version: bool = False,
+        compare_aliases: list[str] | None = None,
+        compare_bindings: list[FileAliasBinding] | None = None,
+        missing_aliases: list[str] | None = None,
+        bind_failure_reason: str | None = None,
+    ) -> dict[str, Any]:
+        resolved_document_id = binding.document_id if binding else None
+        resolved_title = binding.title if binding else None
+        trace: dict[str, Any] = {
+            "alias_resolution": {
+                "status": status,
+                "alias": alias,
+                "resolved_document_id": resolved_document_id,
+                "resolved_title": resolved_title,
+                "alias_scope": "session",
+                "alias_conflict": alias_conflict,
+                "alias_missing": alias_missing,
+                "alias_stale_version": alias_stale_version,
+                "bind_failure_reason": bind_failure_reason,
+            },
+            "alias": alias,
+            "resolved_document_id": resolved_document_id,
+            "resolved_title": resolved_title,
+            "alias_scope": "session",
+            "alias_conflict": alias_conflict,
+            "alias_missing": alias_missing,
+            "alias_stale_version": alias_stale_version,
+            "alias_bind_failure_reason": bind_failure_reason,
+        }
+        if binding:
+            trace["alias_version_id"] = binding.version_id
+            trace["alias_source_name"] = binding.source_name
+            trace["alias_resolution"]["alias_version_id"] = binding.version_id
+            trace["alias_resolution"]["alias_source_name"] = binding.source_name
+        if compare_aliases is not None:
+            trace["compare_aliases"] = compare_aliases
+            trace["alias_resolution"]["compare_aliases"] = compare_aliases
+        if compare_bindings is not None:
+            compare_document_ids = [binding.document_id for binding in compare_bindings]
+            trace["compare_document_ids"] = compare_document_ids
+            trace["alias_resolution"]["compare_document_ids"] = compare_document_ids
+        if missing_aliases is not None:
+            trace["missing_aliases"] = missing_aliases
+            trace["alias_resolution"]["missing_aliases"] = missing_aliases
+        return trace
+
+    def finalize_pending_alias_binding(
+        self,
+        *,
+        session_id: str,
+        decision: DocumentScopeDecision,
+        documents: list[ResolvedDocument | dict[str, Any]],
+    ) -> DocumentScopeDecision:
+        if decision.trace.get("scope_resolution_status") != "alias_bind_pending_current_retrieval":
+            return decision
+
+        session_key = session_id or ""
+        alias = self._normalize_alias(str(decision.trace.get("alias") or ""))
+        resolved_documents = []
+        for raw in documents:
+            document = self._coerce_document(raw)
+            if document:
+                resolved_documents.append(document)
+        unique_by_id = {document.document_id: document for document in resolved_documents}
+
+        if len(unique_by_id) != 1:
+            reason = "no_active_document" if not unique_by_id else "ambiguous_current_retrieval"
+            trace = dict(decision.trace)
+            alias_trace = self._alias_trace(
+                status="alias_bind_failed",
+                alias=alias,
+                alias_missing=False,
+                alias_conflict=False,
+                bind_failure_reason=reason,
+            )
+            trace.update(alias_trace)
+            trace["scope_resolution_status"] = "alias_bind_failed"
+            return DocumentScopeDecision(
+                filters=decision.filters,
+                trace=trace,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                suppress_retrieval=False,
+            )
+
+        document = next(iter(unique_by_id.values()))
+        existing = self._get_alias(session_key, alias)
+        alias_conflict = bool(existing and existing.document_id != document.document_id)
+        binding = FileAliasBinding(
+            alias=alias,
+            document_id=document.document_id,
+            title=document.title,
+            version_id=document.version_id,
+            source_name=document.source_name,
+            alias_scope="session",
+            scope_source="alias_bind_current_retrieval",
+            updated_at=self._now(),
+        )
+        self._session_aliases(session_key)[alias] = binding
+        state = self.get(session_key)
+        new_state = DocumentScopeState(
+            active_document_id=document.document_id,
+            active_document_title=document.title,
+            active_project=state.active_project,
+            active_task=state.active_task,
+            scope_source="file_alias",
+            updated_at=self._now(),
+        )
+        self._states[session_key] = new_state
+        trace = dict(decision.trace)
+        alias_trace = self._alias_trace(
+            status="alias_bound",
+            alias=alias,
+            binding=binding,
+            alias_conflict=alias_conflict,
+        )
+        trace.update(alias_trace)
+        trace.update(
+            {
+                "active_document_id": document.document_id,
+                "active_document_title": document.title,
+                "document_scope_source": "file_alias",
+                "document_scope_changed": state.active_document_id != document.document_id,
+                "scope_resolution_status": "alias_bound",
+                "allowed_document_ids": [document.document_id],
+            }
+        )
+        context_scope = dict(trace.get("context_scope") or {})
+        context_scope["source"] = "file_alias"
+        context_scope["scope_type"] = "document"
+        trace["context_scope"] = context_scope
+        return DocumentScopeDecision(
+            filters={**decision.filters, "document_id": document.document_id},
+            trace=trace,
+            allowed_document_ids=[document.document_id],
+            cross_document_allowed=False,
+            suppress_retrieval=False,
+        )
 
     def _state_with_context_hints(
         self,
@@ -308,6 +719,8 @@ class SessionDocumentScopeStore:
         changed: bool,
         allowed_document_ids: list[str],
         cross_document_allowed: bool,
+        alias_trace: dict[str, Any] | None = None,
+        suppress_retrieval: bool = False,
     ) -> DocumentScopeDecision:
         trace = {
             "active_document_id": state.active_document_id,
@@ -318,6 +731,7 @@ class SessionDocumentScopeStore:
             "document_scope_changed": changed,
             "scope_resolution_status": status,
             "cross_document_allowed": cross_document_allowed,
+            "suppress_retrieval": suppress_retrieval,
             "allowed_document_ids": allowed_document_ids,
             "compare_document_ids": allowed_document_ids if cross_document_allowed else [],
             "active_document_bypassed": bool(cross_document_allowed and state.active_document_id),
@@ -329,20 +743,24 @@ class SessionDocumentScopeStore:
                 "scope_type": self._scope_type(allowed_document_ids, cross_document_allowed, state),
                 "priority": [
                     "explicit_document_id",
+                    "alias_document_id",
                     "compare_scope",
                     "active_document",
-                    "active_project_task_hint",
                     "query_title_inference",
                     "ordinary_retrieval",
+                    "active_project_task_hint",
                     "history_memory_context",
                 ],
             },
         }
+        if alias_trace:
+            trace.update(alias_trace)
         return DocumentScopeDecision(
             filters=filters,
             trace=trace,
             allowed_document_ids=allowed_document_ids,
             cross_document_allowed=cross_document_allowed,
+            suppress_retrieval=suppress_retrieval,
         )
 
     def _clean_title(self, title: str) -> str:
@@ -369,6 +787,13 @@ class SessionDocumentScopeStore:
         if state.active_project or state.active_task:
             return "project_task"
         return "unscoped"
+
+    def _is_compare_query(self, query: str) -> bool:
+        return bool(
+            self._COMPARE_RE.search(query or "")
+            or self._DIFFERENCE_RE.search(query or "")
+            or " 与 " in f" {query or ''} "
+        )
 
     def _unique(self, values: list[str]) -> list[str]:
         seen = set()

@@ -5,7 +5,8 @@ from .interfaces import KernelCitation, KernelItem, KernelResult, QueryRoute, Re
 
 class ContextBuilder:
     def build(self, route: QueryRoute, retrieval: RetrievalOutput) -> str:
-        if not route.needs_retrieval or not retrieval.items:
+        scope_lines = self._scope_lines(retrieval.trace or {})
+        if not route.needs_retrieval or (not retrieval.items and not scope_lines):
             return ""
 
         parts = [
@@ -13,8 +14,14 @@ class ContextBuilder:
             "[System note: The following is enterprise memory context recalled before model answering. It is not new user input. Use it only as cited background evidence.]",
             f"Route: {route.route_type}; retrieval_mode={route.mode}; backend={retrieval.backend}",
             "",
-            "Retrieved evidence:",
         ]
+        if scope_lines:
+            parts.append("Session scope state:")
+            parts.extend(scope_lines)
+            parts.append("")
+
+        if retrieval.items:
+            parts.append("Retrieved evidence:")
         for index, item in enumerate(retrieval.items, start=1):
             source = item.source_name or item.source_uri or item.document_id
             heading = " > ".join(item.heading_path or item.section_path or [])
@@ -76,3 +83,33 @@ class ContextBuilder:
         if start is None:
             return str(end)
         return f"{start}-{end}"
+
+    def _scope_lines(self, trace: dict) -> list[str]:
+        alias_resolution = trace.get("alias_resolution") or {}
+        if not isinstance(alias_resolution, dict) or not alias_resolution:
+            return []
+        status = alias_resolution.get("status")
+        alias = alias_resolution.get("alias")
+        document_id = alias_resolution.get("resolved_document_id")
+        title = alias_resolution.get("resolved_title")
+        missing = alias_resolution.get("alias_missing")
+        conflict = alias_resolution.get("alias_conflict")
+        stale = alias_resolution.get("alias_stale_version")
+        failure_reason = alias_resolution.get("bind_failure_reason")
+        lines = [
+            "Alias handling is done by Hermes session state, not by a model tool.",
+            f"alias_resolution.status={status}; alias={alias}; alias_scope={alias_resolution.get('alias_scope', 'session')}",
+        ]
+        if document_id:
+            lines.append(f"resolved_document_id={document_id}; resolved_title={title or document_id}")
+        if alias_resolution.get("compare_aliases"):
+            lines.append(
+                f"compare_aliases={alias_resolution.get('compare_aliases')}; compare_document_ids={alias_resolution.get('compare_document_ids')}"
+            )
+        if missing or conflict or stale or failure_reason:
+            lines.append(
+                f"alias_diagnostics: missing={bool(missing)}; conflict={bool(conflict)}; stale_version={bool(stale)}; failure_reason={failure_reason}"
+            )
+        if trace.get("scope_retrieval_suppressed") or trace.get("suppress_retrieval"):
+            lines.append("retrieval_suppressed=true; do not answer from history memory as document evidence.")
+        return lines
