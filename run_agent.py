@@ -9109,6 +9109,10 @@ class AIAgent:
                     if _memory_kernel_result is not None:
                         try:
                             _memory_kernel_result.trace["merge_policy"] = _merge_trace
+                            self._memory_kernel.mark_history_memory_usage(
+                                _memory_kernel_result,
+                                bool(_legacy_memory_context),
+                            )
                         except Exception:
                             pass
                     if _injections:

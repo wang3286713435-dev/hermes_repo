@@ -12,3 +12,9 @@
 - dense ingestion 未接通。
 - 当前仍是最小实现，不代表完整企业上下文系统全部完成。
 - facts、权限治理、完整审标自动化不属于 Phase 2.10 最小实现。
+
+## Phase 2.11a
+
+- 已完成最小企业上下文治理增强：project/task hint、history memory 非 evidence 标记、retrieval evidence trace、污染诊断规则。
+- 已修复 `history_memory_as_evidence` 语义：历史会话记忆可 used，但不得作为本轮 retrieval evidence 或 citation。
+- 真实终端验收已通过：A 锁定、刚才文件延续、A/B 对比均使用本轮 retrieval evidence；`history_memory_as_evidence=false`，无第三份文件混入。

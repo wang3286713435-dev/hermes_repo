@@ -61,6 +61,7 @@ class MemoryKernel:
         retrieval = self._retrieve_with_document_scope(scoped_request, route, scope_decision)
         retrieval = self._filter_retrieval_by_document_scope(retrieval, scope_decision)
         citations = self.citations.normalize_citations(retrieval.citations, retrieval.items)
+        trace = dict(retrieval.trace or {})
         retrieval = RetrievalOutput(
             items=retrieval.items,
             citations=citations,
@@ -70,7 +71,7 @@ class MemoryKernel:
             retrieval_mode=retrieval.retrieval_mode,
             applied_filters=retrieval.applied_filters,
             ignored_filters=retrieval.ignored_filters,
-            trace=retrieval.trace,
+            trace=self._with_context_governance_trace(trace, retrieval, scope_decision),
         )
         context_block = self.context_builder.build(route, retrieval) if self.config.inject_context else ""
         scope_trace = scope_decision.trace or {}
@@ -91,9 +92,9 @@ class MemoryKernel:
                 "sparse_retrieval_status": retrieval.sparse_retrieval_status,
                 "applied_filters": retrieval.applied_filters,
                 "ignored_filters": retrieval.ignored_filters,
-                **(retrieval.trace or {}),
                 "document_scope": scope_trace,
                 **scope_trace,
+                **(retrieval.trace or {}),
             },
         )
 
@@ -101,7 +102,24 @@ class MemoryKernel:
         # TODO Phase 2: write retrieval/citation trace and safe memory writeback.
         return None
 
+    def mark_history_memory_usage(self, result: KernelResult, used: bool) -> None:
+        trace = result.trace
+        trace["history_memory_used"] = bool(used)
+        trace["history_memory_as_evidence"] = False
+        context_scope = trace.setdefault("context_scope", {})
+        context_scope["history_memory_used"] = bool(used)
+        context_scope["history_memory_as_evidence"] = False
+        context_scope["history_memory_role"] = "context_hint_only"
+        trace["evidence_source_policy"] = {
+            "retrieval_evidence_required_for_citations": True,
+            "history_memory_can_cite": False,
+            "history_memory_can_satisfy_document_scope": False,
+        }
+
     def result_payload(self, result: KernelResult) -> dict:
+        if result.trace:
+            result.trace["history_memory_as_evidence"] = False
+            result.trace.setdefault("context_scope", {})["history_memory_as_evidence"] = False
         return self.context_builder.result_to_payload(result)
 
     def _scope_decision_from_request(self, request: KernelRequest) -> DocumentScopeDecision:
@@ -152,6 +170,59 @@ class MemoryKernel:
             ignored_filters=retrieval.ignored_filters,
             trace=trace,
         )
+
+    def _with_context_governance_trace(
+        self,
+        trace: dict,
+        retrieval: RetrievalOutput,
+        scope_decision: DocumentScopeDecision,
+    ) -> dict:
+        enriched = dict(trace or {})
+        evidence_document_ids = self._returned_document_ids(retrieval.items, retrieval.citations)
+        enriched["retrieval_evidence_document_ids"] = evidence_document_ids
+        enriched["history_memory_used"] = bool(scope_decision.trace.get("history_memory_used", False))
+        enriched["history_memory_as_evidence"] = False
+        context_scope = dict(enriched.get("context_scope") or {})
+        context_scope["retrieval_evidence_present"] = bool(evidence_document_ids)
+        context_scope["history_memory_used"] = enriched["history_memory_used"]
+        context_scope["history_memory_as_evidence"] = False
+        context_scope["history_memory_role"] = "context_hint_only"
+        enriched["context_scope"] = context_scope
+        enriched["evidence_source_policy"] = {
+            "retrieval_evidence_required_for_citations": True,
+            "history_memory_can_cite": False,
+            "history_memory_can_satisfy_document_scope": False,
+        }
+        enriched["contamination_flags"] = self._contamination_flags(
+            trace=enriched,
+            evidence_document_ids=evidence_document_ids,
+            scope_decision=scope_decision,
+        )
+        return enriched
+
+    def _contamination_flags(
+        self,
+        *,
+        trace: dict,
+        evidence_document_ids: list[str],
+        scope_decision: DocumentScopeDecision,
+    ) -> list[str]:
+        flags: list[str] = []
+        allowed_ids = set(scope_decision.allowed_document_ids or [])
+        if allowed_ids and not evidence_document_ids:
+            flags.append("no_current_retrieval_evidence")
+        unexpected_ids = [document_id for document_id in evidence_document_ids if document_id not in allowed_ids]
+        if allowed_ids and unexpected_ids:
+            flags.append("unexpected_document_id")
+        scope_filter = trace.get("document_scope_filter") or {}
+        if (
+            scope_filter.get("items_before", 0) > scope_filter.get("items_after", 0)
+            or scope_filter.get("citations_before", 0) > scope_filter.get("citations_after", 0)
+        ):
+            flags.append("out_of_scope_evidence_filtered")
+        if scope_decision.cross_document_allowed and allowed_ids and set(evidence_document_ids) != allowed_ids:
+            flags.append("compare_scope_partial_evidence")
+        return flags
 
     def _retrieve_with_document_scope(
         self,

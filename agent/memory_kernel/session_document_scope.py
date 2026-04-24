@@ -10,6 +10,8 @@ from typing import Any, Callable
 class DocumentScopeState:
     active_document_id: str | None = None
     active_document_title: str | None = None
+    active_project: str | None = None
+    active_task: str | None = None
     scope_source: str | None = None
     updated_at: str | None = None
 
@@ -41,6 +43,8 @@ class SessionDocumentScopeStore:
     _CURRENT_DOC_RE = re.compile(r"(刚才那份文件|刚才的文件|当前文件|当前文档|这份文件|这个文件)")
     _COMPARE_RE = re.compile(r"(对比|比较|比对)")
     _DIFFERENCE_RE = re.compile(r"(区别|差异|不同)")
+    _PROJECT_RE = re.compile(r"(?:项目|project)\s*[：:]\s*(.+?)(?=\s*(?:任务|task)\s*[：:]|[，。！？\n]|$)", re.IGNORECASE)
+    _TASK_RE = re.compile(r"(?:任务|task)\s*[：:]\s*(.+?)(?=[，。！？\n]|$)", re.IGNORECASE)
 
     def __init__(self) -> None:
         self._states: dict[str, DocumentScopeState] = {}
@@ -59,6 +63,12 @@ class SessionDocumentScopeStore:
         session_key = session_id or ""
         incoming_filters = dict(filters or {})
         state = self.get(session_key)
+        state = self._state_with_context_hints(
+            state=state,
+            query=query or "",
+            filters=incoming_filters,
+            session_key=session_key,
+        )
 
         if incoming_filters.get("document_id"):
             document_id = str(incoming_filters["document_id"])
@@ -111,6 +121,8 @@ class SessionDocumentScopeStore:
                 new_state = DocumentScopeState(
                     active_document_id=document.document_id,
                     active_document_title=document.title,
+                    active_project=state.active_project,
+                    active_task=state.active_task,
                     scope_source="query_title",
                     updated_at=self._now(),
                 )
@@ -166,6 +178,17 @@ class SessionDocumentScopeStore:
                 status="active_document_applied",
                 changed=False,
                 allowed_document_ids=[state.active_document_id],
+                cross_document_allowed=False,
+            )
+
+        if state.active_project or state.active_task:
+            return self._decision(
+                filters=incoming_filters,
+                state=state,
+                source="active_project_task",
+                status="project_task_hint_active",
+                changed=False,
+                allowed_document_ids=[],
                 cross_document_allowed=False,
             )
 
@@ -238,6 +261,43 @@ class SessionDocumentScopeStore:
                 return ResolvedDocument(document_id=str(document_id), title=str(title))
         return None
 
+    def _state_with_context_hints(
+        self,
+        *,
+        state: DocumentScopeState,
+        query: str,
+        filters: dict[str, Any],
+        session_key: str,
+    ) -> DocumentScopeState:
+        active_project = self._extract_project_hint(query, filters) or state.active_project
+        active_task = self._extract_task_hint(query, filters) or state.active_task
+        if active_project == state.active_project and active_task == state.active_task:
+            return state
+        new_state = DocumentScopeState(
+            active_document_id=state.active_document_id,
+            active_document_title=state.active_document_title,
+            active_project=active_project,
+            active_task=active_task,
+            scope_source=state.scope_source,
+            updated_at=self._now(),
+        )
+        self._states[session_key] = new_state
+        return new_state
+
+    def _extract_project_hint(self, query: str, filters: dict[str, Any]) -> str | None:
+        for key in ("active_project", "project_id", "project", "project_name"):
+            if filters.get(key):
+                return str(filters[key])
+        match = self._PROJECT_RE.search(query or "")
+        return self._clean_context_hint(match.group(1)) if match else None
+
+    def _extract_task_hint(self, query: str, filters: dict[str, Any]) -> str | None:
+        for key in ("active_task", "task_id", "task", "task_name"):
+            if filters.get(key):
+                return str(filters[key])
+        match = self._TASK_RE.search(query or "")
+        return self._clean_context_hint(match.group(1)) if match else None
+
     def _decision(
         self,
         *,
@@ -252,6 +312,8 @@ class SessionDocumentScopeStore:
         trace = {
             "active_document_id": state.active_document_id,
             "active_document_title": state.active_document_title,
+            "active_project": state.active_project,
+            "active_task": state.active_task,
             "document_scope_source": source,
             "document_scope_changed": changed,
             "scope_resolution_status": status,
@@ -260,6 +322,21 @@ class SessionDocumentScopeStore:
             "compare_document_ids": allowed_document_ids if cross_document_allowed else [],
             "active_document_bypassed": bool(cross_document_allowed and state.active_document_id),
             "active_document_id_bypassed": state.active_document_id if cross_document_allowed else None,
+            "history_memory_used": False,
+            "history_memory_as_evidence": False,
+            "context_scope": {
+                "source": source,
+                "scope_type": self._scope_type(allowed_document_ids, cross_document_allowed, state),
+                "priority": [
+                    "explicit_document_id",
+                    "compare_scope",
+                    "active_document",
+                    "active_project_task_hint",
+                    "query_title_inference",
+                    "ordinary_retrieval",
+                    "history_memory_context",
+                ],
+            },
         }
         return DocumentScopeDecision(
             filters=filters,
@@ -275,6 +352,23 @@ class SessionDocumentScopeStore:
             if cleaned.endswith(suffix) and len(cleaned) > len(suffix):
                 cleaned = cleaned[: -len(suffix)].strip()
         return cleaned
+
+    def _clean_context_hint(self, value: str) -> str:
+        return re.sub(r"\s+", " ", value or "").strip(" \t\r\n，。！？:：")
+
+    def _scope_type(
+        self,
+        allowed_document_ids: list[str],
+        cross_document_allowed: bool,
+        state: DocumentScopeState,
+    ) -> str:
+        if cross_document_allowed:
+            return "compare"
+        if allowed_document_ids:
+            return "document"
+        if state.active_project or state.active_task:
+            return "project_task"
+        return "unscoped"
 
     def _unique(self, values: list[str]) -> list[str]:
         seen = set()

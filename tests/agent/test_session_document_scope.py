@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent.memory_kernel.interfaces import KernelCitation, KernelItem, KernelRequest, QueryRoute, RetrievalOutput
+from agent.memory_kernel.interfaces import KernelCitation, KernelItem, KernelRequest, KernelResult, QueryRoute, RetrievalOutput
 from agent.memory_kernel.kernel import MemoryKernel
 from agent.memory_kernel.session_document_scope import (
     DocumentScopeDecision,
@@ -120,6 +120,9 @@ def test_document_scope_filter_removes_third_document_evidence():
     assert [citation.document_id for citation in filtered.citations] == ["doc-a"]
     assert filtered.trace["document_scope_filter"]["items_before"] == 3
     assert filtered.trace["document_scope_filter"]["items_after"] == 2
+    governed = kernel._with_context_governance_trace(filtered.trace, filtered, decision)
+    assert governed["retrieval_evidence_document_ids"] == ["doc-a", "doc-b"]
+    assert "out_of_scope_evidence_filtered" in governed["contamination_flags"]
 
 
 def test_multi_document_compare_runs_scoped_retrieval_for_each_document_and_merges():
@@ -190,5 +193,108 @@ def test_document_scope_trace_has_required_fields():
         "document_scope_changed",
         "scope_resolution_status",
         "cross_document_allowed",
+        "active_project",
+        "active_task",
+        "history_memory_used",
+        "history_memory_as_evidence",
+        "context_scope",
     ):
         assert field in decision.trace
+
+
+def test_active_document_takes_priority_over_project_task_hint():
+    store = SessionDocumentScopeStore()
+
+    store.resolve(session_id="s1", query="请围绕《A标书》回答", filters={}, resolver=_resolver)
+    decision = store.resolve(
+        session_id="s1",
+        query="项目：宝安项目，任务：审标，请继续回答",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.filters["document_id"] == "doc-a"
+    assert decision.trace["active_project"] == "宝安项目"
+    assert decision.trace["active_task"] == "审标"
+    assert decision.trace["context_scope"]["scope_type"] == "document"
+
+
+def test_project_task_hint_only_enters_trace_without_forcing_filter():
+    store = SessionDocumentScopeStore()
+
+    decision = store.resolve(
+        session_id="s1",
+        query="请看当前上下文",
+        filters={"project_id": "project-1", "task_id": "task-1"},
+        resolver=_resolver,
+    )
+
+    assert "document_id" not in decision.filters
+    assert decision.trace["active_project"] == "project-1"
+    assert decision.trace["active_task"] == "task-1"
+    assert decision.trace["context_scope"]["scope_type"] == "project_task"
+
+
+def test_empty_retrieval_does_not_let_history_memory_pretend_to_be_evidence():
+    decision = DocumentScopeDecision(
+        filters={"document_id": "doc-a"},
+        trace={
+            "active_document_id": "doc-a",
+            "active_document_title": "A标书",
+            "document_scope_source": "active_document",
+            "document_scope_changed": False,
+            "scope_resolution_status": "active_document_applied",
+            "cross_document_allowed": False,
+            "history_memory_used": True,
+        },
+        allowed_document_ids=["doc-a"],
+        cross_document_allowed=False,
+    )
+    retrieval = RetrievalOutput(items=[], citations=[], backend="fake")
+
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    trace = kernel._with_context_governance_trace({}, retrieval, decision)
+
+    assert trace["retrieval_evidence_document_ids"] == []
+    assert trace["history_memory_used"] is True
+    assert trace["history_memory_as_evidence"] is False
+    assert trace["context_scope"]["history_memory_as_evidence"] is False
+    assert "no_current_retrieval_evidence" in trace["contamination_flags"]
+
+
+def test_retrieval_evidence_present_keeps_history_memory_as_non_evidence():
+    decision = DocumentScopeDecision(
+        filters={"document_id": "doc-a"},
+        trace={
+            "active_document_id": "doc-a",
+            "active_document_title": "A标书",
+            "document_scope_source": "active_document",
+            "document_scope_changed": False,
+            "scope_resolution_status": "active_document_applied",
+            "cross_document_allowed": False,
+            "history_memory_used": True,
+        },
+        allowed_document_ids=["doc-a"],
+        cross_document_allowed=False,
+    )
+    retrieval = RetrievalOutput(
+        items=[KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="A evidence")],
+        citations=[KernelCitation(document_id="doc-a", version_id="v1", chunk_id="a1")],
+        backend="fake",
+    )
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    trace = kernel._with_context_governance_trace({}, retrieval, decision)
+    result = KernelResult(
+        route=QueryRoute("enterprise_retrieval", True, "test"),
+        retrieval=retrieval,
+        trace=trace,
+    )
+
+    kernel.mark_history_memory_usage(result, True)
+
+    assert result.trace["retrieval_evidence_document_ids"] == ["doc-a"]
+    assert result.trace["history_memory_used"] is True
+    assert result.trace["history_memory_as_evidence"] is False
+    assert result.trace["context_scope"]["history_memory_as_evidence"] is False
+    assert result.trace["evidence_source_policy"]["history_memory_can_cite"] is False
+    assert "no_current_retrieval_evidence" not in result.trace["contamination_flags"]
