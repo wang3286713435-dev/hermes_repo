@@ -480,3 +480,63 @@ def test_retrieval_evidence_present_keeps_history_memory_as_non_evidence():
     assert result.trace["context_scope"]["history_memory_as_evidence"] is False
     assert result.trace["evidence_source_policy"]["history_memory_can_cite"] is False
     assert "no_current_retrieval_evidence" not in result.trace["contamination_flags"]
+
+
+def test_metadata_snapshot_trace_is_never_answer_evidence():
+    decision = DocumentScopeDecision(
+        filters={"document_id": "doc-a"},
+        trace={
+            "active_document_id": "doc-a",
+            "active_document_title": "A标书",
+            "document_scope_source": "active_document",
+            "document_scope_changed": False,
+            "scope_resolution_status": "active_document_applied",
+            "cross_document_allowed": False,
+        },
+        allowed_document_ids=["doc-a"],
+        cross_document_allowed=False,
+    )
+    retrieval = RetrievalOutput(
+        items=[KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="工程地点：深圳市福田区")],
+        citations=[KernelCitation(document_id="doc-a", version_id="v1", chunk_id="a1")],
+        backend="fake",
+        trace={
+            "retrieval_trace": {
+                "metadata_snapshot_used": True,
+                "metadata_fields_matched": ["project_location"],
+                "metadata_source_chunk_ids": ["a1"],
+                "evidence_required": True,
+                "snapshot_as_answer": True,
+            }
+        },
+    )
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    trace = kernel._with_context_governance_trace(retrieval.trace, retrieval, decision)
+
+    assert trace["metadata_snapshot_used"] is True
+    assert trace["metadata_source_chunk_ids"] == ["a1"]
+    assert trace["evidence_required"] is True
+    assert trace["snapshot_as_answer"] is False
+    assert trace["retrieval_evidence_document_ids"] == ["doc-a"]
+
+
+def test_metadata_snapshot_context_block_says_navigation_only():
+    builder = ContextBuilder()
+    retrieval = RetrievalOutput(
+        items=[KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="工程地点：深圳市福田区")],
+        backend="fake",
+        trace={
+            "alias_resolution": {"status": "alias_resolved", "alias": "主标书", "resolved_document_id": "doc-a"},
+            "metadata_snapshot_used": True,
+            "metadata_fields_matched": ["project_location"],
+            "metadata_source_chunk_ids": ["a1"],
+            "snapshot_as_answer": False,
+            "evidence_required": True,
+        },
+    )
+
+    context = builder.build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "metadata_snapshot_used=true" in context
+    assert "snapshot_as_answer=false" in context
+    assert "evidence_required=true" in context

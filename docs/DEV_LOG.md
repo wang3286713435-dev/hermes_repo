@@ -10,3 +10,7 @@
 - [Phase 2.11b] 完成 session-level 文件别名最小实现，支持绑定、使用、对比与 missing/rebind 诊断，missing 时抑制本轮 retrieval。
 - [Phase 2.11b] 修复真实终端 alias 绑定未打通问题，绑定改为会话层状态并注入 context。
 - [Phase 2.11b] 真实终端验收通过：双 alias 对比无第三文件污染，missing alias 可抑制 retrieval。
+- [Phase 2.11c] 完成大标书基础信息召回规划，建议先做 metadata snapshot 再配合章节 boost。
+- [Phase 2.11c] 同步 Hermes_memory 最小实现状态，基础信息 snapshot trace 已可供 Hermes 侧真实终端验收。
+- [Phase 2.11c] 修复终端 trace 语义，metadata snapshot 可用于导航，但 snapshot_as_answer 强制保持 false。
+- [Phase 2.11c] 真实终端复验通过，@主标书基础信息召回命中目标大标书且无 snapshot evidence 误标。

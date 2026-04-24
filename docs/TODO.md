@@ -29,3 +29,13 @@
 - 真实终端验收已通过：`@主标书`、`@交付标准` 绑定与使用成功；双 alias 对比同时召回两份文件；missing alias 成功抑制 retrieval。
 - 质量尾项：`@主标书` 已成功解析，但工程地点 / 建设单位 / 代建单位未被召回，属于大型标书基础信息召回问题，不阻塞 Phase 2.11b。
 - project-level alias 持久化仍未实现，后续如进入项目级知识库治理需单独设计。
+
+## Phase 2.11c
+
+- 已完成大标书基础信息 / 元数据召回增强规划。
+- 建议优先做轻量 `tender_metadata_snapshot`，再配合基础信息 query profile / section boost。
+- metadata snapshot 仅用于检索辅助和引用导航，不得直接替代本轮 retrieval evidence。
+- 优先字段：工程名称、工程地点、招标人 / 建设单位、代建单位、最高投标限价、工期、项目编号 / 标段信息。
+- Hermes_memory 侧已完成最小实现与真实大标书直接复测；Hermes 主仓库当前只消费 retrieval 返回的 trace，不改 memory kernel 主架构。
+- 真实终端验收已通过：围绕 `@主标书` 查询工程地点 / 建设单位 / 代建单位，均命中目标大标书 document_id，evidence 不再落到工程量清单章节。
+- `snapshot_as_answer` 终端 trace 语义已复验：即使 `metadata_snapshot_used=true`，snapshot 也只作为导航，回答 evidence 必须来自 retrieval evidence。

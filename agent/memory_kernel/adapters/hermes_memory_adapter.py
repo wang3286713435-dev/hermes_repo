@@ -13,6 +13,16 @@ from ..interfaces import KernelCitation, KernelItem, KernelRequest, RetrievalOut
 logger = logging.getLogger(__name__)
 
 
+_METADATA_TRACE_FIELDS = (
+    "metadata_snapshot",
+    "metadata_snapshot_used",
+    "metadata_fields_matched",
+    "metadata_source_chunk_ids",
+    "evidence_required",
+    "snapshot_as_answer",
+)
+
+
 def _model_dump(obj: Any) -> dict[str, Any]:
     if isinstance(obj, dict):
         return obj
@@ -75,6 +85,7 @@ class HermesMemoryAdapter:
             retrieval_results = list(getattr(result, "retrieval_results", []) or [])
             context = getattr(result, "context", None)
             raw_citations = list(getattr(context, "citations", []) or [])
+            trace = self._normalize_trace(dict(getattr(result, "trace", {}) or {}))
             return RetrievalOutput(
                 items=[self._item_from_raw(item) for item in retrieval_results],
                 citations=[self._citation_from_raw(citation) for citation in raw_citations],
@@ -84,7 +95,7 @@ class HermesMemoryAdapter:
                 retrieval_mode=str(getattr(context, "retrieval_mode", request.retrieval_mode) if context else request.retrieval_mode),
                 applied_filters=dict(getattr(context, "applied_filters", {}) or {}),
                 ignored_filters=dict(getattr(context, "ignored_filters", {}) or {}),
-                trace=dict(getattr(result, "trace", {}) or {}),
+                trace=trace,
             )
         finally:
             db.close()
@@ -173,6 +184,17 @@ class HermesMemoryAdapter:
             except OSError:
                 continue
         return max(mtimes) if mtimes else 0.0
+
+    def _normalize_trace(self, trace: dict[str, Any]) -> dict[str, Any]:
+        retrieval_trace = trace.get("retrieval_trace")
+        if isinstance(retrieval_trace, dict):
+            for field in _METADATA_TRACE_FIELDS:
+                if field in retrieval_trace:
+                    trace[field] = retrieval_trace[field]
+        if trace.get("metadata_snapshot_used") or trace.get("metadata_snapshot"):
+            trace["evidence_required"] = True
+            trace["snapshot_as_answer"] = False
+        return trace
 
     def _resolve_one_title(self, db: Any, title: str, filters: dict[str, Any]) -> Any | None:
         target = self._normalize_title(title)

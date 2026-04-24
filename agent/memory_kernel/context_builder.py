@@ -112,4 +112,10 @@ class ContextBuilder:
             )
         if trace.get("scope_retrieval_suppressed") or trace.get("suppress_retrieval"):
             lines.append("retrieval_suppressed=true; do not answer from history memory as document evidence.")
+        if trace.get("metadata_snapshot_used"):
+            lines.append(
+                "metadata_snapshot_used=true; snapshot_as_answer=false; evidence_required=true; "
+                f"metadata_fields_matched={trace.get('metadata_fields_matched', [])}; "
+                f"metadata_source_chunk_ids={trace.get('metadata_source_chunk_ids', [])}"
+            )
         return lines
