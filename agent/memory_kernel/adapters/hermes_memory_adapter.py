@@ -263,4 +263,5 @@ class HermesMemoryAdapter:
             page_start=data.get("page_start"),
             page_end=data.get("page_end"),
             quote_text=str(data.get("quote_text", "") or ""),
+            metadata=dict(data.get("metadata") or {}),
         )

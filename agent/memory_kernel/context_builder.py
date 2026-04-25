@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import Any
+
 from .interfaces import KernelCitation, KernelItem, KernelResult, QueryRoute, RetrievalOutput
 
 
 class ContextBuilder:
     def build(self, route: QueryRoute, retrieval: RetrievalOutput) -> str:
         scope_lines = self._scope_lines(retrieval.trace or {})
-        if not route.needs_retrieval or (not retrieval.items and not scope_lines):
+        if not route.needs_retrieval or (not retrieval.items and not retrieval.citations and not scope_lines):
             return ""
 
         parts = [
@@ -31,6 +33,9 @@ class ContextBuilder:
                 header += f"; heading={heading}"
             if page:
                 header += f"; page={page}"
+            location = self._structured_location(item.metadata)
+            if location:
+                header += f"; {location}"
             parts.append(header)
             parts.append(item.text.strip())
             parts.append("")
@@ -72,8 +77,49 @@ class ContextBuilder:
             suffix.append(f"heading={heading}")
         if page:
             suffix.append(f"page={page}")
+        location = self._structured_location(citation.metadata)
+        if location:
+            suffix.append(location)
         suffix_text = "; ".join(suffix)
         return f"[C{index}] {source}; document_id={citation.document_id}; version_id={citation.version_id}; chunk_id={citation.chunk_id}" + (f"; {suffix_text}" if suffix_text else "")
+
+    def _structured_location(self, metadata: dict[str, Any] | None) -> str:
+        data = metadata or {}
+        parser = str(data.get("parser") or "").lower()
+        if parser == "xlsx" or data.get("sheet_name") or data.get("cell_range"):
+            return self._xlsx_location(data)
+        if parser == "pptx" or data.get("slide_number") is not None:
+            return self._pptx_location(data)
+        return ""
+
+    def _xlsx_location(self, metadata: dict[str, Any]) -> str:
+        parts: list[str] = []
+        sheet_name = metadata.get("sheet_name")
+        if sheet_name:
+            parts.append(f"sheet_name={sheet_name}")
+
+        cell_range = metadata.get("cell_range")
+        if cell_range:
+            parts.append(f"cell_range={cell_range}")
+            return "; ".join(parts)
+
+        row_start = metadata.get("row_start")
+        row_end = metadata.get("row_end")
+        if row_start is not None or row_end is not None:
+            row_label = row_start if row_start == row_end or row_end is None else f"{row_start}-{row_end}"
+            parts.append(f"row_range={row_label}")
+            parts.append("cell_range_fallback_reason=missing_cell_range")
+        return "; ".join(parts)
+
+    def _pptx_location(self, metadata: dict[str, Any]) -> str:
+        parts: list[str] = []
+        slide_number = metadata.get("slide_number")
+        slide_title = metadata.get("slide_title")
+        if slide_number is not None:
+            parts.append(f"slide_number={slide_number}")
+        if slide_title:
+            parts.append(f"slide_title={slide_title}")
+        return "; ".join(parts)
 
     def _page_label(self, start: int | None, end: int | None) -> str:
         if start is None and end is None:

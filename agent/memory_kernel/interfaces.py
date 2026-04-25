@@ -48,6 +48,7 @@ class KernelCitation:
     page_start: int | None = None
     page_end: int | None = None
     quote_text: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

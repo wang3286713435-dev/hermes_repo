@@ -49,3 +49,18 @@
 - 新增文件已入库并完成回归文件池固定：`@对比标书`、`@交付标准新版`、`@会议纪要` 均完成 chunk 与 OpenSearch 索引。
 - 综合回归已执行 15/15 通过；两份大标书、两份数字化交付标准、会议纪要与 missing alias 均未出现跨文件污染。
 - 非阻塞尾项：multi-document compare 顶层 trace 暂不聚合每份文档的 metadata snapshot 字段；当前 evidence 与防污染已通过，不阻塞 Phase 2.11d 收口。
+
+## Phase 2.11e
+
+- 已完成 repo hygiene 与 trace polish 边界规划。
+- 主仓库 `uv.lock` 作为 dependency hygiene 单独处理；`tests/agent/test_memory_kernel_adapter_reload.py` 作为后续测试任务评审。
+- Hermes_memory PRD / Roadmap / Technical Design、Linear 协作文档、DX 脚本、`.run/`、`uv.lock` 已分类建账。
+- trace polish 建议只做 compare 顶层 `per_document_metadata_snapshot` 聚合，不改 retrieval contract 或 answer evidence 规则。
+
+## Phase 2.12a
+
+- 已完成 Hermes CLI structured citation 最小修复：Excel evidence/citation 稳定展示 `sheet_name` + `cell_range`；PPTX 稳定展示 `slide_number` + `slide_title`。
+- 已修复 Hermes 主仓库 citation normalization 丢 structured metadata 的消费问题：raw citations 会按 `document_id/version_id/chunk_id` 回填 item metadata。
+- 已修复 context builder 仅看 `items` 不看 `citations` 的展示缺口，避免 structured citation 在 CLI 上被静默吞掉。
+- 5 条 live 复验已通过：Excel 文件锁定、Excel 单项检索、PPTX 文件锁定、PPTX 单页信息、Excel/PPTX 跨类型切回均命中目标 `document_id`，无污染。
+- Phase 2.12 真实终端验收已完成，当前只剩 Git baseline 固化；不再需要回退 Hermes_memory parser 或 retrieval contract。

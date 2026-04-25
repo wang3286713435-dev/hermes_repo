@@ -16,3 +16,7 @@
 - [Phase 2.11c] 真实终端复验通过，@主标书基础信息召回命中目标大标书且无 snapshot evidence 误标。
 - [Phase 2.11d] 完成上下文治理综合回归规划，设计 15 条终端验收 prompt，用于验证 2.11a/b/c 组合防污染。
 - [Phase 2.11d] 完成新增真实文件入库与 15 条综合回归执行，alias、compare、snapshot、missing alias 防污染均通过。
+- [Phase 2.11e] 完成遗留 dirty 与 trace polish 治理规划，建议先文档基线，再 DX/测试，最后处理 trace 聚合。
+- [Phase 2.12a] 修复 Hermes CLI structured citation 消费链路：Excel citation 现稳定展示 sheet_name/cell_range，PPTX citation 展示 slide_number/slide_title。
+- [Phase 2.12a] 补齐 raw citation metadata 回填与 context builder 展示缺口，Excel/PPTX 五条 live 复验均命中目标 document_id，跨类型切换无污染。
+- [Phase 2.12] 真实终端验收已收口：Excel/PPTX structured citation 五条复验全部通过，当前进入 Git baseline 固化阶段。
