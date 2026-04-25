@@ -14,3 +14,5 @@
 - [Phase 2.11c] 同步 Hermes_memory 最小实现状态，基础信息 snapshot trace 已可供 Hermes 侧真实终端验收。
 - [Phase 2.11c] 修复终端 trace 语义，metadata snapshot 可用于导航，但 snapshot_as_answer 强制保持 false。
 - [Phase 2.11c] 真实终端复验通过，@主标书基础信息召回命中目标大标书且无 snapshot evidence 误标。
+- [Phase 2.11d] 完成上下文治理综合回归规划，设计 15 条终端验收 prompt，用于验证 2.11a/b/c 组合防污染。
+- [Phase 2.11d] 完成新增真实文件入库与 15 条综合回归执行，alias、compare、snapshot、missing alias 防污染均通过。

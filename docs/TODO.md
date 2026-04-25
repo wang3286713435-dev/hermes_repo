@@ -39,3 +39,13 @@
 - Hermes_memory 侧已完成最小实现与真实大标书直接复测；Hermes 主仓库当前只消费 retrieval 返回的 trace，不改 memory kernel 主架构。
 - 真实终端验收已通过：围绕 `@主标书` 查询工程地点 / 建设单位 / 代建单位，均命中目标大标书 document_id，evidence 不再落到工程量清单章节。
 - `snapshot_as_answer` 终端 trace 语义已复验：即使 `metadata_snapshot_used=true`，snapshot 也只作为导航，回答 evidence 必须来自 retrieval evidence。
+
+## Phase 2.11d
+
+- 已完成上下文治理综合回归小套件规划，覆盖 active document、file alias、A/B compare、tender metadata snapshot、history memory 非 evidence、missing alias suppress retrieval。
+- 回归计划包含 15 条真实终端验收 prompt；其中 10 条可用现有文件执行，5 条需要新增第二份大型标书与一份企业制度 / 合同类文件。
+- 通过标准要求记录 alias、active document、compare ids、metadata snapshot、retrieval evidence、history memory、suppress retrieval 与 contamination flags。
+- 当前仍不写功能代码，不改 retrieval contract，不改 memory kernel 主架构。
+- 新增文件已入库并完成回归文件池固定：`@对比标书`、`@交付标准新版`、`@会议纪要` 均完成 chunk 与 OpenSearch 索引。
+- 综合回归已执行 15/15 通过；两份大标书、两份数字化交付标准、会议纪要与 missing alias 均未出现跨文件污染。
+- 非阻塞尾项：multi-document compare 顶层 trace 暂不聚合每份文档的 metadata snapshot 字段；当前 evidence 与防污染已通过，不阻塞 Phase 2.11d 收口。
