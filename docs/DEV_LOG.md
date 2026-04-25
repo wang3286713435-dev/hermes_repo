@@ -20,3 +20,5 @@
 - [Phase 2.12a] 修复 Hermes CLI structured citation 消费链路：Excel citation 现稳定展示 sheet_name/cell_range，PPTX citation 展示 slide_number/slide_title。
 - [Phase 2.12a] 补齐 raw citation metadata 回填与 context builder 展示缺口，Excel/PPTX 五条 live 复验均命中目标 document_id，跨类型切换无污染。
 - [Phase 2.12] 真实终端验收已收口：Excel/PPTX structured citation 五条复验全部通过，当前进入 Git baseline 固化阶段。
+- [Phase 2.13] 修复会议纪要 trace/context 消费语义，明确 transcript_as_fact 恒为 false，会议内容不是 confirmed facts。
+- [Phase 2.13] 真实终端验收通过：主标书与会议纪要绑定、对比、防污染均收口，会议内容不替代标书条款。

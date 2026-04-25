@@ -225,12 +225,24 @@ class MemoryKernel:
                 "metadata_source_chunk_ids",
                 "evidence_required",
                 "snapshot_as_answer",
+                "meeting_transcript_used",
+                "meeting_fields_matched",
+                "speaker_detected",
+                "timestamp_detected",
+                "action_items_detected",
+                "decisions_detected",
+                "risks_detected",
+                "meeting_source_chunk_ids",
+                "transcript_as_fact",
             ):
                 if field in retrieval_trace:
                     enriched[field] = retrieval_trace[field]
         if enriched.get("metadata_snapshot_used") or enriched.get("metadata_snapshot"):
             enriched["evidence_required"] = True
             enriched["snapshot_as_answer"] = False
+        if enriched.get("meeting_transcript_used") or "transcript_as_fact" in enriched:
+            enriched["evidence_required"] = True
+            enriched["transcript_as_fact"] = False
         evidence_document_ids = self._returned_document_ids(retrieval.items, retrieval.citations)
         enriched["retrieval_evidence_document_ids"] = evidence_document_ids
         enriched["history_memory_used"] = bool(scope_decision.trace.get("history_memory_used", False))

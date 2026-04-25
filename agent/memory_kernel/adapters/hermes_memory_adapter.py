@@ -22,6 +22,19 @@ _METADATA_TRACE_FIELDS = (
     "snapshot_as_answer",
 )
 
+_MEETING_TRACE_FIELDS = (
+    "meeting_transcript_used",
+    "meeting_fields_matched",
+    "speaker_detected",
+    "timestamp_detected",
+    "action_items_detected",
+    "decisions_detected",
+    "risks_detected",
+    "meeting_source_chunk_ids",
+    "transcript_as_fact",
+    "evidence_required",
+)
+
 
 def _model_dump(obj: Any) -> dict[str, Any]:
     if isinstance(obj, dict):
@@ -140,6 +153,7 @@ class HermesMemoryAdapter:
                 "app.memory_kernel.contracts",
                 "app.memory_kernel.retrieval_orchestrator",
                 "app.memory_kernel.kernel",
+                "app.services.meeting_transcript",
                 "app.services.retrieval.service",
             ]
             importlib.invalidate_caches()
@@ -176,6 +190,7 @@ class HermesMemoryAdapter:
             root / "app/memory_kernel/retrieval_orchestrator.py",
             root / "app/memory_kernel/kernel.py",
             root / "app/services/retrieval/service.py",
+            root / "app/services/meeting_transcript.py",
         ]
         mtimes = []
         for path in candidate_paths:
@@ -188,12 +203,15 @@ class HermesMemoryAdapter:
     def _normalize_trace(self, trace: dict[str, Any]) -> dict[str, Any]:
         retrieval_trace = trace.get("retrieval_trace")
         if isinstance(retrieval_trace, dict):
-            for field in _METADATA_TRACE_FIELDS:
+            for field in (*_METADATA_TRACE_FIELDS, *_MEETING_TRACE_FIELDS):
                 if field in retrieval_trace:
                     trace[field] = retrieval_trace[field]
         if trace.get("metadata_snapshot_used") or trace.get("metadata_snapshot"):
             trace["evidence_required"] = True
             trace["snapshot_as_answer"] = False
+        if trace.get("meeting_transcript_used"):
+            trace["evidence_required"] = True
+            trace["transcript_as_fact"] = False
         return trace
 
     def _resolve_one_title(self, db: Any, title: str, filters: dict[str, Any]) -> Any | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent.memory_kernel.citation_engine import CitationEngine
+from agent.memory_kernel.adapters.hermes_memory_adapter import HermesMemoryAdapter
 from agent.memory_kernel.context_builder import ContextBuilder
 from agent.memory_kernel.interfaces import KernelCitation, KernelItem, RetrievalOutput
 
@@ -164,3 +165,26 @@ def test_context_builder_renders_structured_fields_on_citation_lines():
     assert "[C1]" in context
     assert "slide_number=3" in context
     assert "slide_title=总体建设目标" in context
+
+
+def test_adapter_flattens_meeting_trace_as_non_fact():
+    adapter = HermesMemoryAdapter.__new__(HermesMemoryAdapter)
+
+    trace = adapter._normalize_trace(
+        {
+            "retrieval_trace": {
+                "meeting_transcript_used": True,
+                "meeting_fields_matched": ["action_item", "decision"],
+                "meeting_source_chunk_ids": ["m1"],
+                "action_items_detected": 2,
+                "decisions_detected": 1,
+                "transcript_as_fact": True,
+            }
+        }
+    )
+
+    assert trace["meeting_transcript_used"] is True
+    assert trace["meeting_fields_matched"] == ["action_item", "decision"]
+    assert trace["meeting_source_chunk_ids"] == ["m1"]
+    assert trace["transcript_as_fact"] is False
+    assert trace["evidence_required"] is True

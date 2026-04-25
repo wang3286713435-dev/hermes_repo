@@ -540,3 +540,84 @@ def test_metadata_snapshot_context_block_says_navigation_only():
     assert "metadata_snapshot_used=true" in context
     assert "snapshot_as_answer=false" in context
     assert "evidence_required=true" in context
+
+
+def test_meeting_transcript_trace_is_never_fact_evidence():
+    decision = DocumentScopeDecision(
+        filters={"document_id": "meeting-doc"},
+        trace={
+            "active_document_id": "meeting-doc",
+            "document_scope_source": "active_document",
+            "scope_resolution_status": "active_document_applied",
+        },
+        allowed_document_ids=["meeting-doc"],
+        cross_document_allowed=False,
+    )
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(
+                chunk_id="m1",
+                document_id="meeting-doc",
+                version_id="v1",
+                text="行动项：唐总负责跟进。",
+                metadata={"meeting_transcript": True, "action_item": ["行动项：唐总负责跟进。"]},
+            )
+        ],
+        trace={
+            "retrieval_trace": {
+                "meeting_transcript_used": True,
+                "meeting_fields_matched": ["action_item"],
+                "action_items_detected": 1,
+                "transcript_as_fact": True,
+                "evidence_required": True,
+            }
+        },
+    )
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    trace = kernel._with_context_governance_trace(retrieval.trace, retrieval, decision)
+
+    assert trace["meeting_transcript_used"] is True
+    assert trace["action_items_detected"] == 1
+    assert trace["evidence_required"] is True
+    assert trace["transcript_as_fact"] is False
+    assert trace["retrieval_evidence_document_ids"] == ["meeting-doc"]
+
+
+def test_meeting_transcript_context_block_says_retrieval_evidence_not_fact():
+    builder = ContextBuilder()
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(
+                chunk_id="m1",
+                document_id="meeting-doc",
+                version_id="v1",
+                text="严总：决定采用数字化交付平台作为试点。",
+                source_name="会议纪要汇编",
+                metadata={
+                    "content_profile": "meeting_transcript",
+                    "meeting_transcript": True,
+                    "meeting_fields_matched": ["speaker", "decision"],
+                    "speaker": "严总",
+                    "source_location": "会议纪要 > 结论",
+                    "transcript_as_fact": False,
+                    "evidence_required": True,
+                },
+            )
+        ],
+        backend="fake",
+        trace={
+            "meeting_transcript_used": True,
+            "meeting_fields_matched": ["speaker", "decision"],
+            "meeting_source_chunk_ids": ["m1"],
+            "transcript_as_fact": False,
+            "evidence_required": True,
+        },
+    )
+
+    context = builder.build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "meeting_transcript_used=true" in context
+    assert "transcript_as_fact=false" in context
+    assert "retrieval evidence only, not confirmed facts" in context
+    assert "content_profile=meeting_transcript" in context
+    assert "speaker=严总" in context

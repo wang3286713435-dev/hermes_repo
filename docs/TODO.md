@@ -64,3 +64,9 @@
 - 已修复 context builder 仅看 `items` 不看 `citations` 的展示缺口，避免 structured citation 在 CLI 上被静默吞掉。
 - 5 条 live 复验已通过：Excel 文件锁定、Excel 单项检索、PPTX 文件锁定、PPTX 单页信息、Excel/PPTX 跨类型切回均命中目标 `document_id`，无污染。
 - Phase 2.12 真实终端验收已完成，当前只剩 Git baseline 固化；不再需要回退 Hermes_memory parser 或 retrieval contract。
+
+## Phase 2.13
+
+- 已补 Hermes 主仓库会议纪要 trace/context 消费语义：`meeting_transcript_used=true` 只表示本轮 retrieval evidence 命中，`transcript_as_fact=false` 必须保持不变。
+- context block 已明确会议纪要是 retrieval evidence only，不是 confirmed facts；后续终端复验需先绑定 `@会议纪要` 与 `@主标书`，再做 compare 防污染验收。
+- 真实终端复验已通过：`@主标书`、`@会议纪要` 均绑定成功；行动项 / 决策 / 风险提取保持 `transcript_as_fact=false`；会议纪要与主标书对比允许双 evidence，并未把会议内容误引用为标书条款。

@@ -90,6 +90,8 @@ class ContextBuilder:
             return self._xlsx_location(data)
         if parser == "pptx" or data.get("slide_number") is not None:
             return self._pptx_location(data)
+        if data.get("meeting_transcript") or data.get("content_profile") == "meeting_transcript":
+            return self._meeting_location(data)
         return ""
 
     def _xlsx_location(self, metadata: dict[str, Any]) -> str:
@@ -121,6 +123,22 @@ class ContextBuilder:
             parts.append(f"slide_title={slide_title}")
         return "; ".join(parts)
 
+    def _meeting_location(self, metadata: dict[str, Any]) -> str:
+        parts: list[str] = ["content_profile=meeting_transcript", "transcript_as_fact=false"]
+        source_location = metadata.get("source_location")
+        speaker = metadata.get("speaker")
+        timestamp = metadata.get("timestamp")
+        fields = metadata.get("meeting_fields_matched") or metadata.get("meeting_fields")
+        if source_location:
+            parts.append(f"source_location={source_location}")
+        if speaker:
+            parts.append(f"speaker={speaker}")
+        if timestamp:
+            parts.append(f"timestamp={timestamp}")
+        if fields:
+            parts.append(f"meeting_fields_matched={fields}")
+        return "; ".join(parts)
+
     def _page_label(self, start: int | None, end: int | None) -> str:
         if start is None and end is None:
             return ""
@@ -131,31 +149,33 @@ class ContextBuilder:
         return f"{start}-{end}"
 
     def _scope_lines(self, trace: dict) -> list[str]:
+        lines: list[str] = []
         alias_resolution = trace.get("alias_resolution") or {}
-        if not isinstance(alias_resolution, dict) or not alias_resolution:
-            return []
-        status = alias_resolution.get("status")
-        alias = alias_resolution.get("alias")
-        document_id = alias_resolution.get("resolved_document_id")
-        title = alias_resolution.get("resolved_title")
-        missing = alias_resolution.get("alias_missing")
-        conflict = alias_resolution.get("alias_conflict")
-        stale = alias_resolution.get("alias_stale_version")
-        failure_reason = alias_resolution.get("bind_failure_reason")
-        lines = [
-            "Alias handling is done by Hermes session state, not by a model tool.",
-            f"alias_resolution.status={status}; alias={alias}; alias_scope={alias_resolution.get('alias_scope', 'session')}",
-        ]
-        if document_id:
-            lines.append(f"resolved_document_id={document_id}; resolved_title={title or document_id}")
-        if alias_resolution.get("compare_aliases"):
-            lines.append(
-                f"compare_aliases={alias_resolution.get('compare_aliases')}; compare_document_ids={alias_resolution.get('compare_document_ids')}"
+        if isinstance(alias_resolution, dict) and alias_resolution:
+            status = alias_resolution.get("status")
+            alias = alias_resolution.get("alias")
+            document_id = alias_resolution.get("resolved_document_id")
+            title = alias_resolution.get("resolved_title")
+            missing = alias_resolution.get("alias_missing")
+            conflict = alias_resolution.get("alias_conflict")
+            stale = alias_resolution.get("alias_stale_version")
+            failure_reason = alias_resolution.get("bind_failure_reason")
+            lines.extend(
+                [
+                    "Alias handling is done by Hermes session state, not by a model tool.",
+                    f"alias_resolution.status={status}; alias={alias}; alias_scope={alias_resolution.get('alias_scope', 'session')}",
+                ]
             )
-        if missing or conflict or stale or failure_reason:
-            lines.append(
-                f"alias_diagnostics: missing={bool(missing)}; conflict={bool(conflict)}; stale_version={bool(stale)}; failure_reason={failure_reason}"
-            )
+            if document_id:
+                lines.append(f"resolved_document_id={document_id}; resolved_title={title or document_id}")
+            if alias_resolution.get("compare_aliases"):
+                lines.append(
+                    f"compare_aliases={alias_resolution.get('compare_aliases')}; compare_document_ids={alias_resolution.get('compare_document_ids')}"
+                )
+            if missing or conflict or stale or failure_reason:
+                lines.append(
+                    f"alias_diagnostics: missing={bool(missing)}; conflict={bool(conflict)}; stale_version={bool(stale)}; failure_reason={failure_reason}"
+                )
         if trace.get("scope_retrieval_suppressed") or trace.get("suppress_retrieval"):
             lines.append("retrieval_suppressed=true; do not answer from history memory as document evidence.")
         if trace.get("metadata_snapshot_used"):
@@ -163,5 +183,12 @@ class ContextBuilder:
                 "metadata_snapshot_used=true; snapshot_as_answer=false; evidence_required=true; "
                 f"metadata_fields_matched={trace.get('metadata_fields_matched', [])}; "
                 f"metadata_source_chunk_ids={trace.get('metadata_source_chunk_ids', [])}"
+            )
+        if trace.get("meeting_transcript_used"):
+            lines.append(
+                "meeting_transcript_used=true; transcript_as_fact=false; evidence_required=true; "
+                "meeting transcript is retrieval evidence only, not confirmed facts; "
+                f"meeting_fields_matched={trace.get('meeting_fields_matched', [])}; "
+                f"meeting_source_chunk_ids={trace.get('meeting_source_chunk_ids', [])}"
             )
         return lines
