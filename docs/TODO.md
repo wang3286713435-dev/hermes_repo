@@ -88,3 +88,20 @@
 - 非目标：不做复杂版本 diff、不做版本管理后台、不自动合并不同 `document_id` 历史文件、不做 facts、不进入 rollout。
 - Phase 2.19b 最小实现已完成：active document / alias 均可保留 `version_id`，alias scoped retrieval 会显式带旧 `version_id`，并将 Hermes_memory `version_scope` 映射为 `alias_stale_version` 诊断。
 - Live smoke 已通过：`@版本测试` 绑定 v1 后上传 v2，继续查询 alias 时返回 v1 evidence，同时输出 `alias_stale_version=true` 与 `latest_version_id=<v2>`。
+
+## Phase 2.24a
+
+- 已完成 confirmed facts 作为 Agent 辅助上下文的最小实现：仅显式 facts hint / scope 请求时注入，且必须存在本轮 retrieval evidence。
+- trace 固定输出 `facts_context_used`、`facts_context_fact_ids`、`facts_as_answer=false`、`stale_fact_source_count`；context block 明确 facts 不能替代 citation。
+- confirmed facts 查询通过 Hermes_memory `search_confirmed_facts`，继承 source document soft policy；deny 或无 confirmed facts 时不注入。
+- live smoke 已覆盖：正向注入、stale source warning、无 retrieval evidence 时 suppress facts context。
+- 已修复真实终端验收暴露的展示混淆：confirmed facts context 改为独立分区，不再与 meeting transcript metadata / retrieval evidence 混在 session scope 中。
+- stale fact source 诊断已补强：`stale fact source` 类 query 可触发 confirmed facts stale 检查，并输出 `stale_fact_source_count` 与 `latest_version_id`。
+- 无作用域 stale / fact-answer policy query 已抑制普通 retrieval，避免拉入无关文档；仍可输出 facts 诊断并保持 `facts_as_answer=false`。
+- `facts_context_fact_ids` 只允许 fact_id list，不写入 `[E]` / `[C]` retrieval chunk 或 citation id。
+- alias 绑定 / 普通 retrieval-only / meeting transcript retrieval 场景均会稳定输出 facts diagnostics：`facts_context_used=false`、`facts_context_fact_ids=[]`、`facts_as_answer=false`。
+- Codex C 真实终端复验已通过：`@会议纪要` 预备绑定稳定输出 `false/[]/false`，5 条正式验收全部通过。
+- 已检出 stale fact `9f98384b-5053-4a8f-9b83-35983b28b38e`，`stale_fact_source_count=1`，`latest_version_id=76ca95a1-393f-4278-b254-ab66295bb14f`。
+- 复验未出现 E/C chunks 写入 `facts_context_fact_ids`、fact-only query 检索无关文档或 facts 替代 retrieval evidence；`facts_as_answer` 全场景为 false。
+- 复验注意：`@会议纪要` 属于 session alias，Prompt 4 前必须先在当前会话绑定该 alias，避免新会话 `alias_missing`。
+- 当前仍不让 facts 进入 Agent final answer，不做自动抽取、知识图谱、UI 或 rollout。

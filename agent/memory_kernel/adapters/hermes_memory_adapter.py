@@ -69,6 +69,7 @@ class HermesMemoryAdapter:
         self._request_cls = None
         self._filter_cls = None
         self._document_cls = None
+        self._fact_service_cls = None
         self._loaded_source_mtime = 0.0
         self._load()
 
@@ -143,6 +144,67 @@ class HermesMemoryAdapter:
         finally:
             db.close()
 
+    def search_confirmed_facts(
+        self,
+        *,
+        document_ids: list[str],
+        requester_id: str | None = None,
+        tenant_id: str | None = None,
+        role: str | None = None,
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        if not self._available or self._fact_service_cls is None:
+            return []
+
+        unique_document_ids = list(dict.fromkeys(str(document_id) for document_id in document_ids if document_id))
+        if not unique_document_ids:
+            return []
+
+        self._reload_if_needed()
+        db = self._session_local()
+        try:
+            service = self._fact_service_cls(db)
+            facts: list[dict[str, Any]] = []
+            for document_id in unique_document_ids:
+                views = service.search_confirmed_facts(
+                    source_document_id=document_id,
+                    requester_id=requester_id or "local_dev",
+                    tenant_id=tenant_id or "local_dev",
+                    role=role or "local_dev",
+                )
+                for view in views:
+                    facts.append(self._fact_from_view(view))
+                    if len(facts) >= max(1, limit):
+                        return facts
+            return facts
+        finally:
+            db.close()
+
+    def search_stale_confirmed_facts(
+        self,
+        *,
+        requester_id: str | None = None,
+        tenant_id: str | None = None,
+        role: str | None = None,
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        if not self._available or self._fact_service_cls is None:
+            return []
+
+        self._reload_if_needed()
+        db = self._session_local()
+        try:
+            service = self._fact_service_cls(db)
+            views = service.search_confirmed_facts(
+                requester_id=requester_id or "local_dev",
+                tenant_id=tenant_id or "local_dev",
+                role=role or "local_dev",
+            )
+            facts = [self._fact_from_view(view) for view in views if getattr(view, "stale_source_version", False)]
+            return facts[: max(1, limit)]
+        finally:
+            db.close()
+
     def _load(self, force_reload: bool = False) -> None:
         root = Path(self.config.hermes_memory_path).expanduser().resolve()
         if not root.exists():
@@ -161,6 +223,7 @@ class HermesMemoryAdapter:
                 "app.memory_kernel.kernel",
                 "app.services.meeting_transcript",
                 "app.services.retrieval.service",
+                "app.services.facts",
             ]
             importlib.invalidate_caches()
             loaded_modules = {}
@@ -178,6 +241,7 @@ class HermesMemoryAdapter:
         self._request_cls = loaded_modules["app.memory_kernel.contracts"].MemoryKernelRequest
         self._filter_cls = loaded_modules["app.schemas.retrieval"].RetrievalFilter
         self._document_cls = loaded_modules["app.models.document"].Document
+        self._fact_service_cls = getattr(loaded_modules["app.services.facts"], "FactService", None)
         self._loaded_source_mtime = self._source_tree_mtime(root)
         self._available = True
 
@@ -197,6 +261,8 @@ class HermesMemoryAdapter:
             root / "app/memory_kernel/kernel.py",
             root / "app/services/retrieval/service.py",
             root / "app/services/meeting_transcript.py",
+            root / "app/services/facts.py",
+            root / "app/models/fact.py",
         ]
         mtimes = []
         for path in candidate_paths:
@@ -263,6 +329,26 @@ class HermesMemoryAdapter:
         if latest is not None and getattr(latest, "id", None):
             return str(latest.id)
         return None
+
+    def _fact_from_view(self, view: Any) -> dict[str, Any]:
+        fact = getattr(view, "fact", None)
+        if fact is None:
+            return {}
+        return {
+            "fact_id": str(getattr(fact, "id", "") or ""),
+            "fact_type": str(getattr(fact, "fact_type", "") or ""),
+            "subject": str(getattr(fact, "subject", "") or ""),
+            "predicate": str(getattr(fact, "predicate", "") or ""),
+            "value": str(getattr(fact, "value", "") or ""),
+            "source_document_id": str(getattr(fact, "source_document_id", "") or ""),
+            "source_version_id": str(getattr(fact, "source_version_id", "") or ""),
+            "source_chunk_id": str(getattr(fact, "source_chunk_id", "") or ""),
+            "stale_source_version": bool(getattr(view, "stale_source_version", False)),
+            "latest_version_id": getattr(view, "latest_version_id", None),
+            "source_excerpt": getattr(view, "source_excerpt", None),
+            "source_location": getattr(view, "source_location", None),
+            "verification_status": str(getattr(fact, "verification_status", "") or ""),
+        }
 
     def _normalize_title(self, title: str) -> str:
         text = re.sub(r"\s+", "", title or "").lower()

@@ -72,6 +72,8 @@ class MemoryKernel:
         retrieval = self._filter_retrieval_by_document_scope(retrieval, scope_decision)
         citations = self.citations.normalize_citations(retrieval.citations, retrieval.items)
         trace = dict(retrieval.trace or {})
+        trace = self._with_context_governance_trace(trace, retrieval, scope_decision)
+        trace = self._with_facts_context_trace(trace, scoped_request, retrieval, scope_decision)
         retrieval = RetrievalOutput(
             items=retrieval.items,
             citations=citations,
@@ -81,7 +83,7 @@ class MemoryKernel:
             retrieval_mode=retrieval.retrieval_mode,
             applied_filters=retrieval.applied_filters,
             ignored_filters=retrieval.ignored_filters,
-            trace=self._with_context_governance_trace(trace, retrieval, scope_decision),
+            trace=trace,
         )
         context_block = self.context_builder.build(route, retrieval) if self.config.inject_context else ""
         scope_trace = scope_decision.trace or {}
@@ -162,6 +164,8 @@ class MemoryKernel:
             or scope_decision.cross_document_allowed
             or scope_decision.suppress_retrieval
             or scope_decision.trace.get("alias_resolution")
+            or scope_decision.trace.get("facts_context_requested")
+            or self._facts_context_requested(request, scope_decision)
             or (
                 scope_source not in {None, "none", "active_project_task"}
                 and scope_status not in {None, "project_task_hint_active", "unscoped"}
@@ -264,6 +268,8 @@ class MemoryKernel:
             "retrieval_evidence_required_for_citations": True,
             "history_memory_can_cite": False,
             "history_memory_can_satisfy_document_scope": False,
+            "confirmed_facts_can_cite": False,
+            "confirmed_facts_can_satisfy_retrieval": False,
         }
         enriched["contamination_flags"] = self._contamination_flags(
             trace=enriched,
@@ -271,6 +277,220 @@ class MemoryKernel:
             scope_decision=scope_decision,
         )
         return enriched
+
+    def _with_facts_context_trace(
+        self,
+        trace: dict,
+        request: KernelRequest,
+        retrieval: RetrievalOutput,
+        scope_decision: DocumentScopeDecision,
+    ) -> dict:
+        enriched = dict(trace or {})
+        enriched["facts_as_answer"] = False
+        enriched.setdefault("facts_context_used", False)
+        enriched.setdefault("facts_context_fact_ids", [])
+        enriched.setdefault("stale_fact_source_count", 0)
+
+        context_scope = dict(enriched.get("context_scope") or {})
+        context_scope["facts_as_answer"] = False
+        context_scope.setdefault("facts_context_used", False)
+        enriched["context_scope"] = context_scope
+
+        if not self._facts_context_requested(request, scope_decision):
+            return enriched
+
+        evidence_document_ids = list(enriched.get("retrieval_evidence_document_ids") or [])
+        stale_diagnostic = self._stale_fact_check_requested(request)
+        document_ids = self._facts_context_document_ids(request, scope_decision, evidence_document_ids)
+        if not evidence_document_ids:
+            if stale_diagnostic:
+                stale_facts = self.retrieval.search_stale_confirmed_facts(
+                    requester_id=request.user_id or (request.filters or {}).get("requester_id") or "local_dev",
+                    tenant_id=(request.filters or {}).get("tenant_id"),
+                    role=(request.filters or {}).get("role"),
+                    limit=6,
+                )
+                if stale_facts:
+                    return self._apply_confirmed_facts_context(
+                        enriched,
+                        context_scope,
+                        request,
+                        stale_facts,
+                        diagnostic_only=True,
+                    )
+            if not (stale_diagnostic and document_ids):
+                enriched["facts_context_suppressed_reason"] = "no_current_retrieval_evidence"
+                context_scope["facts_context_suppressed_reason"] = "no_current_retrieval_evidence"
+                flags = list(enriched.get("contamination_flags") or [])
+                if "no_current_retrieval_evidence" not in flags:
+                    flags.append("no_current_retrieval_evidence")
+                enriched["contamination_flags"] = flags
+                return enriched
+            enriched["facts_context_diagnostic_only"] = True
+
+        if not document_ids:
+            enriched["facts_context_suppressed_reason"] = "no_document_scope"
+            context_scope["facts_context_suppressed_reason"] = "no_document_scope"
+            return enriched
+
+        if stale_diagnostic:
+            stale_facts = self.retrieval.search_stale_confirmed_facts(
+                requester_id=request.user_id or (request.filters or {}).get("requester_id") or "local_dev",
+                tenant_id=(request.filters or {}).get("tenant_id"),
+                role=(request.filters or {}).get("role"),
+                limit=6,
+            )
+            if stale_facts:
+                return self._apply_confirmed_facts_context(
+                    enriched,
+                    context_scope,
+                    request,
+                    stale_facts,
+                    diagnostic_only=not bool(evidence_document_ids),
+                )
+
+        facts = self.retrieval.search_confirmed_facts(
+            document_ids=document_ids,
+            requester_id=request.user_id or (request.filters or {}).get("requester_id") or "local_dev",
+            tenant_id=(request.filters or {}).get("tenant_id"),
+            role=(request.filters or {}).get("role"),
+            limit=6,
+        )
+        allowed_evidence_ids = set(evidence_document_ids or document_ids)
+        confirmed_facts = [
+            fact
+            for fact in facts
+            if fact
+            and fact.get("verification_status") == "confirmed"
+            and fact.get("source_document_id") in allowed_evidence_ids
+            and fact.get("source_chunk_id")
+            and fact.get("source_version_id")
+        ]
+        if not confirmed_facts:
+            enriched["facts_context_suppressed_reason"] = "no_confirmed_facts"
+            context_scope["facts_context_suppressed_reason"] = "no_confirmed_facts"
+            return enriched
+
+        return self._apply_confirmed_facts_context(
+            enriched,
+            context_scope,
+            request,
+            confirmed_facts,
+            diagnostic_only=bool(enriched.get("facts_context_diagnostic_only")),
+        )
+
+    def _apply_confirmed_facts_context(
+        self,
+        enriched: dict,
+        context_scope: dict,
+        request: KernelRequest,
+        confirmed_facts: list[dict],
+        *,
+        diagnostic_only: bool = False,
+    ) -> dict:
+        fact_ids = [str(fact["fact_id"]) for fact in confirmed_facts if fact.get("fact_id")]
+        stale_count = sum(1 for fact in confirmed_facts if fact.get("stale_source_version"))
+        enriched["facts_context_used"] = True
+        enriched["facts_context"] = confirmed_facts
+        enriched["facts_context_fact_ids"] = fact_ids
+        enriched["stale_fact_source_count"] = stale_count
+        enriched["facts_as_answer"] = False
+        if diagnostic_only:
+            enriched["facts_context_diagnostic_only"] = True
+        enriched["facts_context_audit"] = {
+            "session_id": request.session_id,
+            "requester_id": request.user_id or "local_dev",
+            "query": request.query,
+            "facts_context_fact_ids": fact_ids,
+        }
+        context_scope["facts_context_used"] = True
+        context_scope["facts_context_fact_ids"] = fact_ids
+        context_scope["stale_fact_source_count"] = stale_count
+        context_scope["facts_as_answer"] = False
+        if diagnostic_only or enriched.get("facts_context_diagnostic_only"):
+            context_scope["facts_context_diagnostic_only"] = True
+        enriched["context_scope"] = context_scope
+        policy = dict(enriched.get("evidence_source_policy") or {})
+        policy["confirmed_facts_can_cite"] = False
+        policy["confirmed_facts_can_satisfy_retrieval"] = False
+        policy["facts_as_answer"] = False
+        enriched["evidence_source_policy"] = policy
+        return enriched
+
+    def _facts_context_requested(self, request: KernelRequest, scope_decision: DocumentScopeDecision) -> bool:
+        scope = request.document_scope or scope_decision.trace or {}
+        if scope.get("facts_context_requested") or scope.get("use_facts_context"):
+            return True
+        query = (request.query or "").lower()
+        return any(
+            hint in query
+            for hint in (
+                "confirmed fact",
+                "confirmed facts",
+                "fact context",
+                "facts context",
+                "已确认事实",
+                "确认事实",
+                "事实卡片",
+                "事实上下文",
+                "事实来源",
+                "过期事实",
+                "历史事实",
+                "stale fact",
+                "stale source",
+                "fact source",
+            )
+        )
+
+    def _stale_fact_check_requested(self, request: KernelRequest) -> bool:
+        query = (request.query or "").lower()
+        return any(
+            hint in query
+            for hint in (
+                "stale fact",
+                "stale source",
+                "fact source",
+                "过期事实",
+                "历史事实",
+                "事实来源",
+                "旧版本事实",
+            )
+        )
+
+    def _fact_answer_policy_query(self, request: KernelRequest) -> bool:
+        query = (request.query or "").lower()
+        return (
+            ("facts" in query and ("answer" in query or "final answer" in query))
+            or ("事实" in query and ("最终答案" in query or "直接作为" in query or "直接回答" in query or "答案来源" in query))
+        )
+
+    def _has_explicit_document_scope(self, request: KernelRequest, scope_decision: DocumentScopeDecision) -> bool:
+        filters = request.filters or {}
+        trace = scope_decision.trace or {}
+        return bool(
+            scope_decision.allowed_document_ids
+            or filters.get("document_id")
+            or trace.get("active_document_id")
+            or trace.get("alias_resolution")
+        )
+
+    def _facts_context_document_ids(
+        self,
+        request: KernelRequest,
+        scope_decision: DocumentScopeDecision,
+        evidence_document_ids: list[str],
+    ) -> list[str]:
+        candidates: list[str] = []
+        candidates.extend(scope_decision.allowed_document_ids or [])
+        if (request.filters or {}).get("document_id"):
+            candidates.append(str((request.filters or {})["document_id"]))
+        trace = scope_decision.trace or {}
+        if trace.get("active_document_id"):
+            candidates.append(str(trace["active_document_id"]))
+        if isinstance(trace.get("compare_document_ids"), list):
+            candidates.extend(str(document_id) for document_id in trace["compare_document_ids"] if document_id)
+        candidates.extend(evidence_document_ids)
+        return list(dict.fromkeys(document_id for document_id in candidates if document_id))
 
     def _contamination_flags(
         self,
@@ -340,6 +560,21 @@ class MemoryKernel:
         route,
         scope_decision: DocumentScopeDecision,
     ) -> RetrievalOutput:
+        if (
+            self._fact_answer_policy_query(request)
+            or self._stale_fact_check_requested(request)
+        ) and not self._has_explicit_document_scope(request, scope_decision):
+            return RetrievalOutput(
+                backend="facts_policy_suppressed",
+                trace={
+                    "scope_retrieval_suppressed": True,
+                    "facts_context_requested": True,
+                    "facts_answer_policy_query": self._fact_answer_policy_query(request),
+                    "facts_stale_policy_query": self._stale_fact_check_requested(request),
+                    "facts_context_suppressed_reason": "no_current_retrieval_evidence",
+                    "no_current_retrieval_evidence": True,
+                },
+            )
         if scope_decision.suppress_retrieval:
             return RetrievalOutput(
                 backend="document_scope_suppressed",

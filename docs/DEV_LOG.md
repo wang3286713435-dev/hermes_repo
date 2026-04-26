@@ -29,3 +29,8 @@
 - [Phase 2.19b] live smoke 通过：@版本测试 绑定 v1 后上传 v2，继续查询 alias 返回 v1 evidence 且提示 stale。
 - [Phase 2.20a] 扩展 CLI smoke：新增 stale alias 用例，live runner 5/5 通过，未改 retrieval contract 或主架构。
 - [Phase 2.20a] 同步收口结论：governance eval、CLI stale alias smoke 与 full Phase 2.14 eval 均通过，dense 假失败由本机 collection 配置引起。
+- [Phase 2.24a] 完成 confirmed facts 辅助上下文最小实现，facts_as_answer 恒为 false，live smoke 覆盖注入、stale 与无 evidence 抑制。
+- [Phase 2.24a] 修复终端验收混淆：facts context 独立分区，stale fact source 可诊断，会议纪要不再被当作 facts。
+- [Phase 2.24a] 二次修复 fact-only / stale query：无作用域时抑制普通 retrieval，避免无关文档污染 facts 诊断。
+- [Phase 2.24a] 修复 alias 绑定展示尾项，所有 enterprise context 均稳定输出 facts false/[]/false 诊断。
+- [Phase 2.24a] Codex C 真实终端复验通过，5 条验收全过，stale fact 检出且 facts_as_answer 全场景为 false。

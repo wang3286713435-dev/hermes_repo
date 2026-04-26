@@ -38,3 +38,51 @@ class RetrievalOrchestrator:
         except Exception as exc:
             logger.warning("Enterprise memory retrieval failed; continuing without memory context: %s", exc)
             return RetrievalOutput(backend="failed", trace={"error": str(exc)})
+
+    def search_confirmed_facts(
+        self,
+        *,
+        document_ids: list[str],
+        requester_id: str | None = None,
+        tenant_id: str | None = None,
+        role: str | None = None,
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        if self.adapter is None:
+            self.adapter = HermesMemoryAdapter(self.config)
+        if not self.adapter.available:
+            return []
+        try:
+            return self.adapter.search_confirmed_facts(
+                document_ids=document_ids,
+                requester_id=requester_id,
+                tenant_id=tenant_id,
+                role=role,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning("Enterprise confirmed facts lookup failed: %s", exc)
+            return []
+
+    def search_stale_confirmed_facts(
+        self,
+        *,
+        requester_id: str | None = None,
+        tenant_id: str | None = None,
+        role: str | None = None,
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        if self.adapter is None:
+            self.adapter = HermesMemoryAdapter(self.config)
+        if not self.adapter.available:
+            return []
+        try:
+            return self.adapter.search_stale_confirmed_facts(
+                requester_id=requester_id,
+                tenant_id=tenant_id,
+                role=role,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning("Enterprise stale confirmed facts lookup failed: %s", exc)
+            return []
