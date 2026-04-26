@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import statistics
 import subprocess
@@ -27,6 +28,10 @@ OLD_QA_ID = "1db84714-d49f-48a2-8fa9-c6f73424dd32"
 OLD_DELIVERY_ID = "46372530-ea3d-4442-bd67-23efeb0b70df"
 COMPARE_TENDER_ID = "a47a409f-cb8a-4d29-b938-43c10767802d"
 NEW_DELIVERY_ID = "60d9601a-e797-47c9-a421-61dba6f88c7c"
+STALE_VERSION_DOC_ID = "120dbe44-4f7e-4266-97c2-c02118aff929"
+STALE_VERSION_OLD_VERSION_ID = "896a19d7-2b01-4492-9672-bb4fdfbc7921"
+STALE_VERSION_LATEST_VERSION_ID = "76ca95a1-393f-4278-b254-ab66295bb14f"
+STALE_VERSION_TITLE = "phase219a-live-smoke-restart-20260426-120827-73d9169e"
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,7 @@ class SmokeCase:
     prompts: list[str]
     required_substrings: list[str] = field(default_factory=list)
     forbidden_substrings: list[str] = field(default_factory=list)
+    bootstrap_aliases: list[dict[str, Any]] = field(default_factory=list)
     skip_reason: str | None = None
 
 
@@ -92,7 +98,6 @@ def default_cases() -> list[SmokeCase]:
                 "transcript_as_fact=false",
             ],
             forbidden_substrings=[
-                "retrieval suppressed",
                 "retrieval_suppressed=true",
                 "suppress_retrieval=true",
                 "cannot source from history memory",
@@ -111,6 +116,42 @@ def default_cases() -> list[SmokeCase]:
                 "evidence_required=true",
             ],
             forbidden_substrings=["transcript_as_fact=true", MAIN_TENDER_ID],
+        ),
+        SmokeCase(
+            id="alias_stale_version_warning",
+            prompts=[
+                "请开启本轮 Phase 2.20a stale alias smoke 会话，回答 ok，并保留 session_id。",
+                "围绕 @版本测试 回答旧版本金额是多少？必须执行 scoped retrieval，并输出 alias_stale_version、latest_version_id、version_id、retrieval_evidence_document_ids。",
+            ],
+            bootstrap_aliases=[
+                {
+                    "alias": "版本测试",
+                    "document_id": STALE_VERSION_DOC_ID,
+                    "title": STALE_VERSION_TITLE,
+                    "version_id": STALE_VERSION_OLD_VERSION_ID,
+                    "source_name": STALE_VERSION_TITLE,
+                    "alias_scope": "session",
+                    "scope_source": "phase220_cli_smoke_bootstrap",
+                }
+            ],
+            required_substrings=[
+                STALE_VERSION_DOC_ID,
+                STALE_VERSION_OLD_VERSION_ID,
+                f"latest_version_id={STALE_VERSION_LATEST_VERSION_ID}",
+                "alias_stale_version=true",
+                "retrieval_evidence_document_ids",
+            ],
+            forbidden_substrings=[
+                "alias_missing",
+                "retrieval_suppressed=true",
+                "suppress_retrieval=true",
+                MAIN_TENDER_ID,
+                MEETING_ID,
+                OLD_QA_ID,
+                OLD_DELIVERY_ID,
+                COMPARE_TENDER_ID,
+                NEW_DELIVERY_ID,
+            ],
         ),
     ]
 
@@ -166,6 +207,53 @@ def parse_session_id(output: str) -> str | None:
     return None
 
 
+def session_scope_state_path() -> Path:
+    hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    return hermes_home / "state" / "session_document_scope.json"
+
+
+def seed_session_aliases(session_id: str, aliases: list[dict[str, Any]], state_path: Path | None = None) -> None:
+    if not aliases:
+        return
+    path = state_path or session_scope_state_path()
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    else:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    states = payload.setdefault("states", {})
+    stored_aliases = payload.setdefault("aliases", {})
+    session_aliases = stored_aliases.setdefault(session_id, {})
+    for alias in aliases:
+        alias_name = str(alias["alias"]).lstrip("@")
+        binding = {
+            "alias": alias_name,
+            "document_id": str(alias["document_id"]),
+            "title": str(alias.get("title") or alias["document_id"]),
+            "version_id": str(alias["version_id"]) if alias.get("version_id") else None,
+            "source_name": str(alias["source_name"]) if alias.get("source_name") else None,
+            "alias_scope": str(alias.get("alias_scope") or "session"),
+            "scope_source": str(alias.get("scope_source") or "phase214b_cli_smoke_bootstrap"),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        session_aliases[alias_name] = binding
+        states[session_id] = {
+            "active_document_id": binding["document_id"],
+            "active_document_title": binding["title"],
+            "active_document_version_id": binding["version_id"],
+            "active_project": None,
+            "active_task": None,
+            "scope_source": "phase214b_cli_smoke_bootstrap",
+            "updated_at": binding["updated_at"],
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def build_chat_command(hermes_bin: Path, prompt: str, session_id: str | None = None) -> list[str]:
     cmd = [str(hermes_bin), "chat", "-Q"]
     if session_id:
@@ -208,6 +296,8 @@ def run_case(case: SmokeCase, hermes_bin: Path, timeout_s: int) -> tuple[dict[st
                 result["session_bootstrap_error"] = "session_id_not_found_in_first_turn"
                 result["failed_command"] = " ".join(cmd[:4] + ["..."])
                 return result, (time.perf_counter() - started) * 1000
+            if session_id and case.bootstrap_aliases:
+                seed_session_aliases(session_id, case.bootstrap_aliases)
     result = evaluate_output(case, "\n".join(chunks))
     result["returncode"] = 0
     result["session_id"] = session_id

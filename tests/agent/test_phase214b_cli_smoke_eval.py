@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.phase214b_cli_smoke_eval import (
     SmokeCase,
     build_chat_command,
     evaluate_output,
     parse_session_id,
+    seed_session_aliases,
     summarize,
 )
 
@@ -122,3 +126,28 @@ def test_parse_session_id_from_exit_summary_output():
     output = "Resume this session with:\n  hermes --resume 20260426_def456\nSession:        20260426_def456\n"
 
     assert parse_session_id(output) == "20260426_def456"
+
+
+def test_seed_session_aliases_writes_session_scoped_version_binding(tmp_path):
+    state_path = tmp_path / "state" / "session_document_scope.json"
+
+    seed_session_aliases(
+        "session-1",
+        [
+            {
+                "alias": "版本测试",
+                "document_id": "doc-v",
+                "title": "版本测试文件",
+                "version_id": "v-old",
+                "source_name": "版本测试文件",
+                "scope_source": "test",
+            }
+        ],
+        state_path=state_path,
+    )
+
+    payload = __import__("json").loads(state_path.read_text(encoding="utf-8"))
+    binding = payload["aliases"]["session-1"]["版本测试"]
+    assert binding["document_id"] == "doc-v"
+    assert binding["version_id"] == "v-old"
+    assert payload["states"]["session-1"]["active_document_version_id"] == "v-old"

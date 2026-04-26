@@ -27,3 +27,5 @@
 - [Phase 2.19b] 完成 alias stale version 联调规划：alias 已具备 version_id 字段，但 active document 绑定路径需补版本保持与 stale trace。
 - [Phase 2.19b] 完成 alias stale version 最小实现：alias 可保留 version_id，旧版 alias 显式查历史版本并输出 latest_version_id。
 - [Phase 2.19b] live smoke 通过：@版本测试 绑定 v1 后上传 v2，继续查询 alias 返回 v1 evidence 且提示 stale。
+- [Phase 2.20a] 扩展 CLI smoke：新增 stale alias 用例，live runner 5/5 通过，未改 retrieval contract 或主架构。
+- [Phase 2.20a] 同步收口结论：governance eval、CLI stale alias smoke 与 full Phase 2.14 eval 均通过，dense 假失败由本机 collection 配置引起。

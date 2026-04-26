@@ -77,6 +77,8 @@
 - CLI smoke 重点覆盖 session scope、alias、A/B compare、structured citation 展示、meeting transcript 非 fact 语义。
 - Phase 2.14b CLI smoke 已收口：修复非交互 `chat -q --resume` 新进程无法恢复 alias/scope 的问题，将 session document scope / file alias 最小持久化到 Hermes state 文件。
 - Phase 2.14b live runner 已通过：`total=4, passed=4, failed=0, skipped=0`，覆盖 missing alias suppress、alias bind/use `@主标书`、`@会议纪要` vs `@主标书` compare、`transcript_as_fact=false`。
+- Phase 2.20a 已扩展 CLI smoke：新增 `alias_stale_version_warning`，通过 session state bootstrap 绑定旧 version；live runner `5 passed / 0 failed / 0 skipped`。
+- Phase 2.20a 已完成收口验证：Hermes_memory governance eval `5/5`、CLI smoke `5/5`、full Phase 2.14 eval `16 passed / 0 failed / 1 skipped`；dense 假失败根因为本机 `.env` 指向旧 Qdrant collection。
 
 ## Phase 2.19b
 
