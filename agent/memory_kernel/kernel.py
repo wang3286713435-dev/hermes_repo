@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
+from hermes_constants import get_hermes_home
+
 from .citation_engine import CitationEngine
 from .config import MemoryKernelConfig
 from .context_builder import ContextBuilder
@@ -27,7 +29,9 @@ class MemoryKernel:
         self.retrieval = RetrievalOrchestrator(config)
         self.citations = CitationEngine()
         self.context_builder = ContextBuilder()
-        self.document_scope = SessionDocumentScopeStore()
+        self.document_scope = SessionDocumentScopeStore(
+            get_hermes_home() / "state" / "session_document_scope.json"
+        )
 
     def resolve_document_scope(
         self,

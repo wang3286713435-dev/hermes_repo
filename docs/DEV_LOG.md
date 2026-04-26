@@ -22,3 +22,5 @@
 - [Phase 2.12] 真实终端验收已收口：Excel/PPTX structured citation 五条复验全部通过，当前进入 Git baseline 固化阶段。
 - [Phase 2.13] 修复会议纪要 trace/context 消费语义，明确 transcript_as_fact 恒为 false，会议内容不是 confirmed facts。
 - [Phase 2.13] 真实终端验收通过：主标书与会议纪要绑定、对比、防污染均收口，会议内容不替代标书条款。
+- [Phase 2.14] 同步回归评测规划状态，Hermes 主仓库后续只承担少量 CLI smoke 验证。
+- [Phase 2.14b] 完成 CLI smoke 收口，修复非交互 resume 下 alias/scope 失效，live runner 4/4 通过。

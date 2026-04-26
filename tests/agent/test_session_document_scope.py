@@ -142,6 +142,34 @@ def test_session_file_alias_compare_resolves_two_aliases():
     assert decision.trace["compare_document_ids"] == ["doc-a", "doc-b"]
 
 
+def test_session_file_alias_persists_across_store_instances(tmp_path):
+    storage_path = tmp_path / "session_document_scope.json"
+    first_store = SessionDocumentScopeStore(storage_path=storage_path)
+    first_store.resolve(session_id="s1", query="把《A标书》设为 @主标书", filters={}, resolver=_resolver)
+
+    resumed_store = SessionDocumentScopeStore(storage_path=storage_path)
+    decision = resumed_store.resolve(session_id="s1", query="围绕 @主标书 回答总工期", filters={}, resolver=_resolver)
+
+    assert decision.filters["document_id"] == "doc-a"
+    assert decision.trace["scope_resolution_status"] == "alias_resolved"
+    assert decision.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+
+
+def test_session_file_alias_compare_persists_across_store_instances(tmp_path):
+    storage_path = tmp_path / "session_document_scope.json"
+    first_store = SessionDocumentScopeStore(storage_path=storage_path)
+    first_store.resolve(session_id="s1", query="把《A标书》设为 @主标书", filters={}, resolver=_resolver)
+    first_store.resolve(session_id="s1", query="把《B标书》设为 @交付标准", filters={}, resolver=_resolver)
+
+    resumed_store = SessionDocumentScopeStore(storage_path=storage_path)
+    decision = resumed_store.resolve(session_id="s1", query="对比 @主标书 和 @交付标准", filters={}, resolver=_resolver)
+
+    assert decision.cross_document_allowed is True
+    assert decision.allowed_document_ids == ["doc-a", "doc-b"]
+    assert decision.trace["scope_resolution_status"] == "multi_document_alias_resolved"
+    assert decision.trace["compare_document_ids"] == ["doc-a", "doc-b"]
+
+
 def test_session_file_alias_missing_does_not_reuse_active_document():
     store = SessionDocumentScopeStore()
     store.resolve(session_id="s1", query="请围绕《B标书》回答", filters={}, resolver=_resolver)

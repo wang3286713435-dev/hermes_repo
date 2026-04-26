@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
+from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -63,9 +68,11 @@ class SessionDocumentScopeStore:
     _PROJECT_RE = re.compile(r"(?:项目|project)\s*[：:]\s*(.+?)(?=\s*(?:任务|task)\s*[：:]|[，。！？\n]|$)", re.IGNORECASE)
     _TASK_RE = re.compile(r"(?:任务|task)\s*[：:]\s*(.+?)(?=[，。！？\n]|$)", re.IGNORECASE)
 
-    def __init__(self) -> None:
+    def __init__(self, storage_path: str | Path | None = None) -> None:
+        self._storage_path = Path(storage_path) if storage_path else None
         self._states: dict[str, DocumentScopeState] = {}
         self._aliases: dict[str, dict[str, FileAliasBinding]] = {}
+        self._load()
 
     def get(self, session_id: str) -> DocumentScopeState:
         return self._states.get(session_id or "", DocumentScopeState())
@@ -169,6 +176,7 @@ class SessionDocumentScopeStore:
                     updated_at=self._now(),
                 )
                 self._states[session_key] = new_state
+                self._save()
                 scoped_filters = {**incoming_filters, "document_id": document.document_id}
                 return self._decision(
                     filters=scoped_filters,
@@ -407,6 +415,7 @@ class SessionDocumentScopeStore:
             updated_at=self._now(),
         )
         self._states[session_key] = new_state
+        self._save()
         scoped_filters = {**filters, "document_id": document.document_id}
         return self._decision(
             filters=scoped_filters,
@@ -460,6 +469,7 @@ class SessionDocumentScopeStore:
             updated_at=self._now(),
         )
         self._states[session_key] = new_state
+        self._save()
         scoped_filters = {**filters, "document_id": binding.document_id}
         return self._decision(
             filters=scoped_filters,
@@ -642,6 +652,7 @@ class SessionDocumentScopeStore:
             updated_at=self._now(),
         )
         self._states[session_key] = new_state
+        self._save()
         trace = dict(decision.trace)
         alias_trace = self._alias_trace(
             status="alias_bound",
@@ -693,6 +704,7 @@ class SessionDocumentScopeStore:
             updated_at=self._now(),
         )
         self._states[session_key] = new_state
+        self._save()
         return new_state
 
     def _extract_project_hint(self, query: str, filters: dict[str, Any]) -> str | None:
@@ -806,3 +818,73 @@ class SessionDocumentScopeStore:
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _load(self) -> None:
+        if not self._storage_path or not self._storage_path.exists():
+            return
+        try:
+            raw = json.loads(self._storage_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        states = raw.get("states") if isinstance(raw, dict) else {}
+        aliases = raw.get("aliases") if isinstance(raw, dict) else {}
+        if isinstance(states, dict):
+            for session_id, state in states.items():
+                if isinstance(state, dict):
+                    self._states[str(session_id)] = DocumentScopeState(
+                        active_document_id=state.get("active_document_id"),
+                        active_document_title=state.get("active_document_title"),
+                        active_project=state.get("active_project"),
+                        active_task=state.get("active_task"),
+                        scope_source=state.get("scope_source"),
+                        updated_at=state.get("updated_at"),
+                    )
+        if isinstance(aliases, dict):
+            for session_id, bindings in aliases.items():
+                if not isinstance(bindings, dict):
+                    continue
+                session_aliases: dict[str, FileAliasBinding] = {}
+                for alias, binding in bindings.items():
+                    if not isinstance(binding, dict) or not binding.get("document_id"):
+                        continue
+                    normalized_alias = self._normalize_alias(str(alias))
+                    session_aliases[normalized_alias] = FileAliasBinding(
+                        alias=normalized_alias,
+                        document_id=str(binding["document_id"]),
+                        title=str(binding.get("title") or binding["document_id"]),
+                        version_id=str(binding["version_id"]) if binding.get("version_id") else None,
+                        source_name=str(binding["source_name"]) if binding.get("source_name") else None,
+                        alias_scope=str(binding.get("alias_scope") or "session"),
+                        scope_source=str(binding["scope_source"]) if binding.get("scope_source") else None,
+                        updated_at=str(binding["updated_at"]) if binding.get("updated_at") else None,
+                    )
+                if session_aliases:
+                    self._aliases[str(session_id)] = session_aliases
+
+    def _save(self) -> None:
+        if not self._storage_path:
+            return
+        payload = {
+            "states": {session_id: asdict(state) for session_id, state in self._states.items()},
+            "aliases": {
+                session_id: {alias: asdict(binding) for alias, binding in bindings.items()}
+                for session_id, bindings in self._aliases.items()
+            },
+        }
+        try:
+            self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(self._storage_path.parent),
+                delete=False,
+            ) as temp_file:
+                json.dump(payload, temp_file, ensure_ascii=False, indent=2, sort_keys=True)
+                temp_name = temp_file.name
+            os.replace(temp_name, self._storage_path)
+        except Exception:
+            try:
+                if "temp_name" in locals():
+                    Path(temp_name).unlink(missing_ok=True)
+            except Exception:
+                pass

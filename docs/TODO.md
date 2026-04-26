@@ -70,3 +70,10 @@
 - 已补 Hermes 主仓库会议纪要 trace/context 消费语义：`meeting_transcript_used=true` 只表示本轮 retrieval evidence 命中，`transcript_as_fact=false` 必须保持不变。
 - context block 已明确会议纪要是 retrieval evidence only，不是 confirmed facts；后续终端复验需先绑定 `@会议纪要` 与 `@主标书`，再做 compare 防污染验收。
 - 真实终端复验已通过：`@主标书`、`@会议纪要` 均绑定成功；行动项 / 决策 / 风险提取保持 `transcript_as_fact=false`；会议纪要与主标书对比允许双 evidence，并未把会议内容误引用为标书条款。
+
+## Phase 2.14
+
+- 已进入企业记忆回归评测规划：主评测建议放在 Hermes_memory API-level deterministic eval，Hermes 主仓库只补少量 CLI black-box smoke。
+- CLI smoke 重点覆盖 session scope、alias、A/B compare、structured citation 展示、meeting transcript 非 fact 语义。
+- Phase 2.14b CLI smoke 已收口：修复非交互 `chat -q --resume` 新进程无法恢复 alias/scope 的问题，将 session document scope / file alias 最小持久化到 Hermes state 文件。
+- Phase 2.14b live runner 已通过：`total=4, passed=4, failed=0, skipped=0`，覆盖 missing alias suppress、alias bind/use `@主标书`、`@会议纪要` vs `@主标书` compare、`transcript_as_fact=false`。
