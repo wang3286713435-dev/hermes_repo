@@ -238,9 +238,12 @@ class MemoryKernel:
                 "risks_detected",
                 "meeting_source_chunk_ids",
                 "transcript_as_fact",
+                "version_scope",
+                "version_policy",
             ):
                 if field in retrieval_trace:
                     enriched[field] = retrieval_trace[field]
+        self._merge_alias_version_trace(enriched)
         if enriched.get("metadata_snapshot_used") or enriched.get("metadata_snapshot"):
             enriched["evidence_required"] = True
             enriched["snapshot_as_answer"] = False
@@ -293,6 +296,44 @@ class MemoryKernel:
             flags.append("compare_scope_partial_evidence")
         return flags
 
+    def _merge_alias_version_trace(self, trace: dict) -> None:
+        alias_resolution = trace.get("alias_resolution")
+        if not isinstance(alias_resolution, dict):
+            return
+
+        version_scope = trace.get("version_scope")
+        if isinstance(version_scope, dict) and "stale_version" in version_scope:
+            stale = bool(version_scope.get("stale_version"))
+            trace["alias_stale_version"] = stale
+            alias_resolution["alias_stale_version"] = stale
+            for field in ("latest_version_id", "superseded_by_version_id", "version_id", "version_policy"):
+                if version_scope.get(field) is not None:
+                    trace[field] = version_scope.get(field)
+                    alias_resolution[field] = version_scope.get(field)
+
+        multi_document = trace.get("multi_document_retrieval")
+        if not isinstance(multi_document, dict):
+            return
+        per_document = multi_document.get("per_document")
+        if not isinstance(per_document, list):
+            return
+        stale_entries = [
+            {
+                "alias": entry.get("alias"),
+                "document_id": entry.get("document_id"),
+                "alias_version_id": entry.get("alias_version_id"),
+                "latest_version_id": entry.get("latest_version_id"),
+                "superseded_by_version_id": entry.get("superseded_by_version_id"),
+            }
+            for entry in per_document
+            if isinstance(entry, dict) and entry.get("alias_stale_version")
+        ]
+        if stale_entries:
+            trace["alias_stale_version"] = True
+            trace["compare_alias_stale_versions"] = stale_entries
+            alias_resolution["alias_stale_version"] = True
+            alias_resolution["compare_alias_stale_versions"] = stale_entries
+
     def _retrieve_with_document_scope(
         self,
         request: KernelRequest,
@@ -318,11 +359,14 @@ class MemoryKernel:
         scope_decision: DocumentScopeDecision,
     ) -> RetrievalOutput:
         document_ids = list(scope_decision.allowed_document_ids or [])
+        version_by_document, alias_by_document = self._compare_version_scope(scope_decision)
         top_k_allocations = self._allocate_top_k(request.top_k, len(document_ids))
         per_document_outputs: list[tuple[str, RetrievalOutput]] = []
 
         for document_id, top_k in zip(document_ids, top_k_allocations):
             scoped_filters = {**(request.filters or {}), "document_id": document_id}
+            if version_by_document.get(document_id):
+                scoped_filters["version_id"] = version_by_document[document_id]
             per_document_request = replace(
                 request,
                 top_k=top_k,
@@ -341,15 +385,30 @@ class MemoryKernel:
             items.extend(output.items)
             citations.extend(output.citations)
             ignored_filters.update(output.ignored_filters or {})
+            version_scope = self._version_scope_from_output(output)
+            alias = alias_by_document.get(document_id, {}).get("alias")
+            alias_version_id = alias_by_document.get(document_id, {}).get("version_id")
+            entry = {
+                "document_id": document_id,
+                "backend": output.backend,
+                "items": len(output.items),
+                "citations": len(output.citations),
+                "dense_retrieval_status": output.dense_retrieval_status,
+                "sparse_retrieval_status": output.sparse_retrieval_status,
+            }
+            if alias:
+                entry["alias"] = alias
+            if alias_version_id:
+                entry["alias_version_id"] = alias_version_id
+            if version_scope:
+                entry["version_scope"] = version_scope
+                entry["alias_stale_version"] = bool(version_scope.get("stale_version"))
+                if version_scope.get("latest_version_id"):
+                    entry["latest_version_id"] = version_scope.get("latest_version_id")
+                if version_scope.get("superseded_by_version_id"):
+                    entry["superseded_by_version_id"] = version_scope.get("superseded_by_version_id")
             per_document_trace.append(
-                {
-                    "document_id": document_id,
-                    "backend": output.backend,
-                    "items": len(output.items),
-                    "citations": len(output.citations),
-                    "dense_retrieval_status": output.dense_retrieval_status,
-                    "sparse_retrieval_status": output.sparse_retrieval_status,
-                }
+                entry
             )
 
         returned_document_ids = self._returned_document_ids(items, citations)
@@ -377,6 +436,44 @@ class MemoryKernel:
             ignored_filters=ignored_filters,
             trace=trace,
         )
+
+    def _compare_version_scope(
+        self,
+        scope_decision: DocumentScopeDecision,
+    ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+        version_by_document: dict[str, str] = {}
+        alias_by_document: dict[str, dict[str, str]] = {}
+        compare_versions = scope_decision.trace.get("compare_document_versions") or []
+        if not isinstance(compare_versions, list):
+            return version_by_document, alias_by_document
+        for entry in compare_versions:
+            if not isinstance(entry, dict):
+                continue
+            document_id = entry.get("document_id")
+            if not document_id:
+                continue
+            document_id = str(document_id)
+            alias_by_document[document_id] = {
+                key: str(value)
+                for key, value in {
+                    "alias": entry.get("alias"),
+                    "version_id": entry.get("version_id"),
+                }.items()
+                if value
+            }
+            if entry.get("version_id"):
+                version_by_document[document_id] = str(entry["version_id"])
+        return version_by_document, alias_by_document
+
+    def _version_scope_from_output(self, output: RetrievalOutput) -> dict:
+        trace = output.trace or {}
+        version_scope = trace.get("version_scope")
+        if isinstance(version_scope, dict):
+            return version_scope
+        retrieval_trace = trace.get("retrieval_trace")
+        if isinstance(retrieval_trace, dict) and isinstance(retrieval_trace.get("version_scope"), dict):
+            return retrieval_trace["version_scope"]
+        return {}
 
     def _allocate_top_k(self, top_k: int, bucket_count: int) -> list[int]:
         if bucket_count <= 0:

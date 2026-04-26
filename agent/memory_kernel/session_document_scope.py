@@ -15,6 +15,7 @@ from typing import Any, Callable
 class DocumentScopeState:
     active_document_id: str | None = None
     active_document_title: str | None = None
+    active_document_version_id: str | None = None
     active_project: str | None = None
     active_task: str | None = None
     scope_source: str | None = None
@@ -170,6 +171,7 @@ class SessionDocumentScopeStore:
                 new_state = DocumentScopeState(
                     active_document_id=document.document_id,
                     active_document_title=document.title,
+                    active_document_version_id=document.version_id,
                     active_project=state.active_project,
                     active_task=state.active_task,
                     scope_source="query_title",
@@ -177,7 +179,7 @@ class SessionDocumentScopeStore:
                 )
                 self._states[session_key] = new_state
                 self._save()
-                scoped_filters = {**incoming_filters, "document_id": document.document_id}
+                scoped_filters = self._scoped_filters(incoming_filters, document.document_id, document.version_id)
                 return self._decision(
                     filters=scoped_filters,
                     state=new_state,
@@ -199,7 +201,11 @@ class SessionDocumentScopeStore:
 
         if self._CURRENT_DOC_RE.search(query or ""):
             if state.active_document_id:
-                scoped_filters = {**incoming_filters, "document_id": state.active_document_id}
+                scoped_filters = self._scoped_filters(
+                    incoming_filters,
+                    state.active_document_id,
+                    state.active_document_version_id,
+                )
                 return self._decision(
                     filters=scoped_filters,
                     state=state,
@@ -220,7 +226,11 @@ class SessionDocumentScopeStore:
             )
 
         if state.active_document_id:
-            scoped_filters = {**incoming_filters, "document_id": state.active_document_id}
+            scoped_filters = self._scoped_filters(
+                incoming_filters,
+                state.active_document_id,
+                state.active_document_version_id,
+            )
             return self._decision(
                 filters=scoped_filters,
                 state=state,
@@ -354,6 +364,7 @@ class SessionDocumentScopeStore:
                 document = ResolvedDocument(
                     document_id=state.active_document_id,
                     title=state.active_document_title or state.active_document_id,
+                    version_id=state.active_document_version_id,
                 )
                 source = "alias_bind_current_document"
             else:
@@ -409,6 +420,7 @@ class SessionDocumentScopeStore:
         new_state = DocumentScopeState(
             active_document_id=document.document_id,
             active_document_title=document.title,
+            active_document_version_id=document.version_id,
             active_project=state.active_project,
             active_task=state.active_task,
             scope_source="file_alias",
@@ -416,7 +428,7 @@ class SessionDocumentScopeStore:
         )
         self._states[session_key] = new_state
         self._save()
-        scoped_filters = {**filters, "document_id": document.document_id}
+        scoped_filters = self._scoped_filters(filters, document.document_id, document.version_id)
         return self._decision(
             filters=scoped_filters,
             state=new_state,
@@ -463,6 +475,7 @@ class SessionDocumentScopeStore:
         new_state = DocumentScopeState(
             active_document_id=binding.document_id,
             active_document_title=binding.title,
+            active_document_version_id=binding.version_id,
             active_project=state.active_project,
             active_task=state.active_task,
             scope_source="file_alias",
@@ -470,7 +483,7 @@ class SessionDocumentScopeStore:
         )
         self._states[session_key] = new_state
         self._save()
-        scoped_filters = {**filters, "document_id": binding.document_id}
+        scoped_filters = self._scoped_filters(filters, binding.document_id, binding.version_id)
         return self._decision(
             filters=scoped_filters,
             state=new_state,
@@ -582,8 +595,22 @@ class SessionDocumentScopeStore:
             trace["alias_resolution"]["compare_aliases"] = compare_aliases
         if compare_bindings is not None:
             compare_document_ids = [binding.document_id for binding in compare_bindings]
+            compare_version_ids = [binding.version_id for binding in compare_bindings]
             trace["compare_document_ids"] = compare_document_ids
+            trace["compare_version_ids"] = compare_version_ids
             trace["alias_resolution"]["compare_document_ids"] = compare_document_ids
+            trace["alias_resolution"]["compare_version_ids"] = compare_version_ids
+            if compare_aliases is not None:
+                compare_versions = [
+                    {
+                        "alias": alias,
+                        "document_id": binding.document_id,
+                        "version_id": binding.version_id,
+                    }
+                    for alias, binding in zip(compare_aliases, compare_bindings)
+                ]
+                trace["compare_document_versions"] = compare_versions
+                trace["alias_resolution"]["compare_document_versions"] = compare_versions
         if missing_aliases is not None:
             trace["missing_aliases"] = missing_aliases
             trace["alias_resolution"]["missing_aliases"] = missing_aliases
@@ -646,6 +673,7 @@ class SessionDocumentScopeStore:
         new_state = DocumentScopeState(
             active_document_id=document.document_id,
             active_document_title=document.title,
+            active_document_version_id=document.version_id,
             active_project=state.active_project,
             active_task=state.active_task,
             scope_source="file_alias",
@@ -665,6 +693,7 @@ class SessionDocumentScopeStore:
             {
                 "active_document_id": document.document_id,
                 "active_document_title": document.title,
+                "active_document_version_id": document.version_id,
                 "document_scope_source": "file_alias",
                 "document_scope_changed": state.active_document_id != document.document_id,
                 "scope_resolution_status": "alias_bound",
@@ -698,6 +727,7 @@ class SessionDocumentScopeStore:
         new_state = DocumentScopeState(
             active_document_id=state.active_document_id,
             active_document_title=state.active_document_title,
+            active_document_version_id=state.active_document_version_id,
             active_project=active_project,
             active_task=active_task,
             scope_source=state.scope_source,
@@ -737,6 +767,7 @@ class SessionDocumentScopeStore:
         trace = {
             "active_document_id": state.active_document_id,
             "active_document_title": state.active_document_title,
+            "active_document_version_id": state.active_document_version_id,
             "active_project": state.active_project,
             "active_task": state.active_task,
             "document_scope_source": source,
@@ -800,6 +831,17 @@ class SessionDocumentScopeStore:
             return "project_task"
         return "unscoped"
 
+    def _scoped_filters(
+        self,
+        filters: dict[str, Any],
+        document_id: str,
+        version_id: str | None = None,
+    ) -> dict[str, Any]:
+        scoped_filters = {**filters, "document_id": document_id}
+        if version_id:
+            scoped_filters["version_id"] = version_id
+        return scoped_filters
+
     def _is_compare_query(self, query: str) -> bool:
         return bool(
             self._COMPARE_RE.search(query or "")
@@ -834,6 +876,7 @@ class SessionDocumentScopeStore:
                     self._states[str(session_id)] = DocumentScopeState(
                         active_document_id=state.get("active_document_id"),
                         active_document_title=state.get("active_document_title"),
+                        active_document_version_id=state.get("active_document_version_id"),
                         active_project=state.get("active_project"),
                         active_task=state.get("active_task"),
                         scope_source=state.get("scope_source"),

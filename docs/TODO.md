@@ -77,3 +77,12 @@
 - CLI smoke 重点覆盖 session scope、alias、A/B compare、structured citation 展示、meeting transcript 非 fact 语义。
 - Phase 2.14b CLI smoke 已收口：修复非交互 `chat -q --resume` 新进程无法恢复 alias/scope 的问题，将 session document scope / file alias 最小持久化到 Hermes state 文件。
 - Phase 2.14b live runner 已通过：`total=4, passed=4, failed=0, skipped=0`，覆盖 missing alias suppress、alias bind/use `@主标书`、`@会议纪要` vs `@主标书` compare、`transcript_as_fact=false`。
+
+## Phase 2.19b
+
+- 已完成 alias stale version 联调边界规划；当前主仓库 alias 结构已有 `version_id` 字段并会持久化，但 active document state 不保存 `version_id`，部分“当前文件绑定”路径可能丢版本信息。
+- 最小实现边界：alias 若绑定旧 `version_id`，应以显式历史版本检索，trace 输出 `alias_stale_version=true`、`latest_version_id`、`superseded_by_version_id`，并提示用户可切换 latest。
+- compare mode 中任一 alias stale 时，需在 trace 中按 alias 侧可诊断；不得因为 stale 提示放松 A/B evidence 防污染规则。
+- 非目标：不做复杂版本 diff、不做版本管理后台、不自动合并不同 `document_id` 历史文件、不做 facts、不进入 rollout。
+- Phase 2.19b 最小实现已完成：active document / alias 均可保留 `version_id`，alias scoped retrieval 会显式带旧 `version_id`，并将 Hermes_memory `version_scope` 映射为 `alias_stale_version` 诊断。
+- Live smoke 已通过：`@版本测试` 绑定 v1 后上传 v2，继续查询 alias 时返回 v1 evidence，同时输出 `alias_stale_version=true` 与 `latest_version_id=<v2>`。

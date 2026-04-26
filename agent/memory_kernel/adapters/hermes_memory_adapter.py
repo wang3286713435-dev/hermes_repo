@@ -35,6 +35,11 @@ _MEETING_TRACE_FIELDS = (
     "evidence_required",
 )
 
+_VERSION_TRACE_FIELDS = (
+    "version_scope",
+    "version_policy",
+)
+
 
 def _model_dump(obj: Any) -> dict[str, Any]:
     if isinstance(obj, dict):
@@ -129,6 +134,7 @@ class HermesMemoryAdapter:
                         {
                             "document_id": str(document.id),
                             "title": str(document.title),
+                            "version_id": self._latest_version_id(document),
                             "source_type": getattr(document, "source_type", None),
                             "document_type": getattr(document, "document_type", None),
                         }
@@ -203,7 +209,7 @@ class HermesMemoryAdapter:
     def _normalize_trace(self, trace: dict[str, Any]) -> dict[str, Any]:
         retrieval_trace = trace.get("retrieval_trace")
         if isinstance(retrieval_trace, dict):
-            for field in (*_METADATA_TRACE_FIELDS, *_MEETING_TRACE_FIELDS):
+            for field in (*_METADATA_TRACE_FIELDS, *_MEETING_TRACE_FIELDS, *_VERSION_TRACE_FIELDS):
                 if field in retrieval_trace:
                     trace[field] = retrieval_trace[field]
         if trace.get("metadata_snapshot_used") or trace.get("metadata_snapshot"):
@@ -243,6 +249,19 @@ class HermesMemoryAdapter:
             return exact[0]
         if partial:
             return partial[0]
+        return None
+
+    def _latest_version_id(self, document: Any) -> str | None:
+        metadata = getattr(document, "metadata_json", None) or {}
+        if isinstance(metadata, dict) and metadata.get("current_version_id"):
+            return str(metadata["current_version_id"])
+        try:
+            versions = list(getattr(document, "versions", []) or [])
+        except Exception:
+            versions = []
+        latest = next((version for version in versions if getattr(version, "is_latest", False)), None)
+        if latest is not None and getattr(latest, "id", None):
+            return str(latest.id)
         return None
 
     def _normalize_title(self, title: str) -> str:

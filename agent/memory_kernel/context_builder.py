@@ -159,6 +159,8 @@ class ContextBuilder:
             missing = alias_resolution.get("alias_missing")
             conflict = alias_resolution.get("alias_conflict")
             stale = alias_resolution.get("alias_stale_version")
+            latest_version_id = alias_resolution.get("latest_version_id")
+            superseded_by_version_id = alias_resolution.get("superseded_by_version_id")
             failure_reason = alias_resolution.get("bind_failure_reason")
             lines.extend(
                 [
@@ -174,8 +176,14 @@ class ContextBuilder:
                 )
             if missing or conflict or stale or failure_reason:
                 lines.append(
-                    f"alias_diagnostics: missing={bool(missing)}; conflict={bool(conflict)}; stale_version={bool(stale)}; failure_reason={failure_reason}"
+                    f"alias_diagnostics: missing={bool(missing)}; conflict={bool(conflict)}; "
+                    f"stale_version={bool(stale)}; latest_version_id={latest_version_id}; "
+                    f"superseded_by_version_id={superseded_by_version_id}; failure_reason={failure_reason}"
                 )
+            if stale:
+                lines.append("alias_stale_version=true; this alias points to a historical version, recommend switching to latest when the user did not explicitly request history.")
+            if alias_resolution.get("compare_alias_stale_versions"):
+                lines.append(f"compare_alias_stale_versions={alias_resolution.get('compare_alias_stale_versions')}")
         if trace.get("scope_retrieval_suppressed") or trace.get("suppress_retrieval"):
             lines.append("retrieval_suppressed=true; do not answer from history memory as document evidence.")
         if trace.get("metadata_snapshot_used"):

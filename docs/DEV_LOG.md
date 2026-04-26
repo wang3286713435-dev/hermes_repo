@@ -24,3 +24,6 @@
 - [Phase 2.13] 真实终端验收通过：主标书与会议纪要绑定、对比、防污染均收口，会议内容不替代标书条款。
 - [Phase 2.14] 同步回归评测规划状态，Hermes 主仓库后续只承担少量 CLI smoke 验证。
 - [Phase 2.14b] 完成 CLI smoke 收口，修复非交互 resume 下 alias/scope 失效，live runner 4/4 通过。
+- [Phase 2.19b] 完成 alias stale version 联调规划：alias 已具备 version_id 字段，但 active document 绑定路径需补版本保持与 stale trace。
+- [Phase 2.19b] 完成 alias stale version 最小实现：alias 可保留 version_id，旧版 alias 显式查历史版本并输出 latest_version_id。
+- [Phase 2.19b] live smoke 通过：@版本测试 绑定 v1 后上传 v2，继续查询 alias 返回 v1 evidence 且提示 stale。
