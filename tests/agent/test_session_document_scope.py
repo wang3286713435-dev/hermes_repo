@@ -355,6 +355,361 @@ def test_session_file_alias_binds_after_same_turn_retrieval():
     assert "Alias handling is done by Hermes session state" in result.context_block
 
 
+def test_session_file_alias_title_bind_falls_back_to_same_turn_retrieval(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="hw1",
+                        document_id="doc-hardware",
+                        version_id="v-hardware",
+                        text="硬件清单 evidence",
+                        source_name="硬件清单",
+                    )
+                ],
+                citations=[
+                    KernelCitation(
+                        document_id="doc-hardware",
+                        version_id="v-hardware",
+                        chunk_id="hw1",
+                        source_name="硬件清单",
+                    )
+                ],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+
+    result = kernel.start_turn(KernelRequest(query="把《硬件清单》设为 @硬件清单", session_id="s1"))
+    decision = kernel.resolve_document_scope(session_id="s1", query="围绕 @硬件清单 回答总价", filters={})
+
+    assert fake_retrieval.requests
+    assert fake_retrieval.requests[0].document_scope["scope_resolution_status"] == "alias_bind_pending_title_retrieval"
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-hardware"
+    assert result.trace["alias_resolution"]["resolved_title"] == "硬件清单"
+    assert decision.filters["document_id"] == "doc-hardware"
+    assert decision.filters["version_id"] == "v-hardware"
+
+
+def test_session_file_alias_unquoted_meeting_file_bind_falls_back_to_retrieval(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="meeting-1",
+                        document_id="doc-meeting",
+                        version_id="v-meeting",
+                        text="会议纪要 evidence",
+                        source_name="会议纪要",
+                    )
+                ],
+                citations=[
+                    KernelCitation(
+                        document_id="doc-meeting",
+                        version_id="v-meeting",
+                        chunk_id="meeting-1",
+                        source_name="会议纪要",
+                    )
+                ],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+
+    result = kernel.start_turn(KernelRequest(query="把会议纪要文件设为 @会议纪要", session_id="s1"))
+    decision = kernel.resolve_document_scope(session_id="s1", query="围绕 @会议纪要 提取行动项", filters={})
+
+    assert fake_retrieval.requests
+    assert fake_retrieval.requests[0].document_scope["scope_resolution_status"] == "alias_bind_pending_title_retrieval"
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-meeting"
+    assert decision.filters["document_id"] == "doc-meeting"
+    assert decision.filters["version_id"] == "v-meeting"
+
+
+def test_session_file_alias_unquoted_hardware_bind_resolves_later_query(tmp_path):
+    class FakeRetrieval:
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="hardware-1",
+                        document_id="doc-hardware",
+                        version_id="v-hardware",
+                        text="硬件清单 evidence",
+                        source_name="硬件清单",
+                    )
+                ],
+                citations=[
+                    KernelCitation(
+                        document_id="doc-hardware",
+                        version_id="v-hardware",
+                        chunk_id="hardware-1",
+                        source_name="硬件清单",
+                    )
+                ],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    kernel.retrieval = FakeRetrieval()
+
+    result = kernel.start_turn(KernelRequest(query="把硬件清单设为 @硬件清单", session_id="s1"))
+    decision = kernel.resolve_document_scope(session_id="s1", query="围绕 @硬件清单 查询设备金额", filters={})
+
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-hardware"
+    assert decision.trace["scope_resolution_status"] == "alias_resolved"
+    assert decision.filters["document_id"] == "doc-hardware"
+
+
+def test_session_file_alias_unquoted_pptx_title_bind_falls_back_to_retrieval(tmp_path):
+    class FakeRetrieval:
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="pptx-1",
+                        document_id="doc-ctower",
+                        version_id="v-ctower",
+                        text="C塔方案 evidence",
+                        source_name="C塔方案",
+                    )
+                ],
+                citations=[
+                    KernelCitation(
+                        document_id="doc-ctower",
+                        version_id="v-ctower",
+                        chunk_id="pptx-1",
+                        source_name="C塔方案",
+                    )
+                ],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    kernel.retrieval = FakeRetrieval()
+
+    result = kernel.start_turn(KernelRequest(query="把C塔方案设为 @C塔方案", session_id="s1"))
+    decision = kernel.resolve_document_scope(session_id="s1", query="围绕 @C塔方案 查询第一页", filters={})
+
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-ctower"
+    assert decision.filters["document_id"] == "doc-ctower"
+    assert decision.filters["version_id"] == "v-ctower"
+
+
+def test_session_file_alias_current_main_tender_binds_active_document_without_title_lookup():
+    class Resolver:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, titles, filters):
+            self.calls.append((titles, filters))
+            return _resolver(titles, filters)
+
+    store = SessionDocumentScopeStore()
+    resolver = Resolver()
+    store.resolve(session_id="s1", query="请围绕《A标书》回答", filters={}, resolver=resolver)
+    resolver.calls.clear()
+
+    decision = store.resolve(session_id="s1", query="把当前主标书设为 @主标书", filters={}, resolver=resolver)
+
+    assert resolver.calls == []
+    assert decision.trace["alias_resolution"]["status"] == "alias_bound"
+    assert decision.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+    assert decision.trace["alias_version_id"] == "v1"
+    assert decision.filters["document_id"] == "doc-a"
+    assert decision.filters["version_id"] == "v1"
+
+
+def test_session_file_alias_current_tender_without_active_document_uses_retrieval_fallback(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="tender-1",
+                        document_id="doc-a",
+                        version_id="v1",
+                        text="A evidence",
+                        source_name="A标书",
+                    )
+                ],
+                citations=[KernelCitation(document_id="doc-a", version_id="v1", chunk_id="tender-1", source_name="A标书")],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+
+    result = kernel.start_turn(KernelRequest(query="把当前标书设为 @主标书", session_id="s1"))
+
+    assert fake_retrieval.requests
+    assert fake_retrieval.requests[0].document_scope["scope_resolution_status"] == "alias_bind_pending_current_retrieval"
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+
+
+def test_session_file_alias_title_bind_failure_does_not_suppress_retrieval(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            return RetrievalOutput(items=[], citations=[], backend="fake")
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+
+    result = kernel.start_turn(KernelRequest(query="把《不存在的文件》设为 @测试文件", session_id="s1"))
+
+    assert fake_retrieval.requests
+    assert fake_retrieval.requests[0].document_scope["scope_resolution_status"] == "alias_bind_pending_title_retrieval"
+    assert result.retrieval.backend == "fake"
+    assert result.trace["scope_resolution_status"] == "alias_bind_failed"
+    assert result.trace["alias_resolution"]["bind_failure_reason"] == "no_title_retrieval_match"
+
+
+def test_session_file_alias_compare_after_title_bind_fallback(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            query = request.query or ""
+            document_id = request.filters.get("document_id")
+            if document_id:
+                title_by_id = {"doc-meeting": "会议纪要", "doc-tender": "主标书"}
+                version_by_id = {"doc-meeting": "v-meeting", "doc-tender": "v-tender"}
+                return RetrievalOutput(
+                    items=[
+                        KernelItem(
+                            chunk_id=f"{document_id}-1",
+                            document_id=document_id,
+                            version_id=version_by_id[document_id],
+                            text=f"{title_by_id[document_id]} evidence",
+                            source_name=title_by_id[document_id],
+                        )
+                    ],
+                    citations=[
+                        KernelCitation(
+                            document_id=document_id,
+                            version_id=version_by_id[document_id],
+                            chunk_id=f"{document_id}-1",
+                            source_name=title_by_id[document_id],
+                        )
+                    ],
+                    backend="fake",
+                )
+            if "会议纪要" in query:
+                return RetrievalOutput(
+                    items=[
+                        KernelItem(
+                            chunk_id="meeting-1",
+                            document_id="doc-meeting",
+                            version_id="v-meeting",
+                            text="会议纪要 evidence",
+                            source_name="会议纪要",
+                        )
+                    ],
+                    citations=[
+                        KernelCitation(
+                            document_id="doc-meeting",
+                            version_id="v-meeting",
+                            chunk_id="meeting-1",
+                            source_name="会议纪要",
+                        )
+                    ],
+                    backend="fake",
+                )
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="tender-1",
+                        document_id="doc-tender",
+                        version_id="v-tender",
+                        text="主标书 evidence",
+                        source_name="主标书",
+                    )
+                ],
+                citations=[
+                    KernelCitation(
+                        document_id="doc-tender",
+                        version_id="v-tender",
+                        chunk_id="tender-1",
+                        source_name="主标书",
+                    )
+                ],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    kernel.retrieval = FakeRetrieval()
+
+    meeting_result = kernel.start_turn(KernelRequest(query="把《会议纪要》设为 @会议纪要", session_id="s1"))
+    tender_result = kernel.start_turn(KernelRequest(query="把《主标书》设为 @主标书", session_id="s1"))
+    compare_result = kernel.start_turn(KernelRequest(query="对比 @会议纪要 和 @主标书", session_id="s1"))
+
+    assert meeting_result.trace["alias_resolution"]["resolved_document_id"] == "doc-meeting"
+    assert tender_result.trace["alias_resolution"]["resolved_document_id"] == "doc-tender"
+    assert compare_result.trace["alias_resolution"]["status"] == "multi_document_alias_resolved"
+    assert compare_result.trace["compare_document_ids"] == ["doc-meeting", "doc-tender"]
+    assert compare_result.trace["returned_document_ids"] == ["doc-meeting", "doc-tender"]
+    assert "scope_retrieval_suppressed" not in compare_result.trace
+
+
 def test_alias_scope_forces_retrieval_even_without_router_hint():
     class FakeRetrieval:
         def __init__(self):

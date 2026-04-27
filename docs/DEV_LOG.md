@@ -34,3 +34,5 @@
 - [Phase 2.24a] 二次修复 fact-only / stale query：无作用域时抑制普通 retrieval，避免无关文档污染 facts 诊断。
 - [Phase 2.24a] 修复 alias 绑定展示尾项，所有 enterprise context 均稳定输出 facts false/[]/false 诊断。
 - [Phase 2.24a] Codex C 真实终端复验通过，5 条验收全过，stale fact 检出且 facts_as_answer 全场景为 false。
+- [Phase 2.30b] 修复标题类 alias 绑定 fallback：当 resolver 未命中但同轮 retrieval 可找到唯一文件时，session alias 会完成绑定；direct assertion tests 覆盖 alias bind/use、fallback failure 与 compare alias。
+- [Phase 2.30b] 补齐无书名号 alias 绑定：会议纪要文件、硬件清单、C塔方案、当前主标书 / 当前标书均进入正确 bind path；direct assertion tests 增至 53 个测试函数通过。

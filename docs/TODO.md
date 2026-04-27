@@ -105,3 +105,13 @@
 - 复验未出现 E/C chunks 写入 `facts_context_fact_ids`、fact-only query 检索无关文档或 facts 替代 retrieval evidence；`facts_as_answer` 全场景为 false。
 - 复验注意：`@会议纪要` 属于 session alias，Prompt 4 前必须先在当前会话绑定该 alias，避免新会话 `alias_missing`。
 - 当前仍不让 facts 进入 Agent final answer，不做自动抽取、知识图谱、UI 或 rollout。
+
+## Phase 2.30b
+
+- 已修复 Practical MVP Pilot 中标题类 alias 绑定稳定性问题：`把《标题》设为 @alias` 在 title resolver 未命中时不再直接 suppress retrieval。
+- 新增 `alias_bind_pending_title_retrieval`，同轮 retrieval 返回唯一目标文档后完成 alias 绑定并持久化 document_id / version_id。
+- 绑定失败时返回 `no_title_retrieval_match` / `ambiguous_title_retrieval` 诊断，不复用旧 active document。
+- missing alias suppress retrieval、compare 防第三文件污染、stale alias 诊断保持既有语义。
+- 待 Codex C 复跑 12 条 Pilot query，重点覆盖 `@硬件清单`、`@会议纪要`、`@C塔方案` 与 `@会议纪要 vs @主标书`。
+- 已补齐 Pilot runbook 原文 alias 绑定覆盖：无书名号 `把会议纪要文件设为 @会议纪要`、`把硬件清单设为 @硬件清单`、`把C塔方案设为 @C塔方案` 均可走 title retrieval fallback。
+- `把当前主标书设为 @主标书` / `把当前标书设为 @主标书` 可按 current document binding 或 current retrieval fallback 处理，不误复用旧 alias 或无关文件。

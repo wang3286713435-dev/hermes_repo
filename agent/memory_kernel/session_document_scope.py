@@ -60,10 +60,13 @@ class SessionDocumentScopeStore:
     _QUOTED_TITLE_RE = re.compile(r"[《「『\"]([^》」』\"]+)[》」』\"]")
     _ALIAS_RE = re.compile(r"@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
     _ALIAS_BIND_RE = re.compile(r"(?:设为|命名为|取名为|叫做|叫)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
+    _ALIAS_BIND_TITLE_RE = re.compile(
+        r"(?:把|将)\s*(.+?)\s*(?:设为|命名为|取名为|叫做|叫)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)"
+    )
     _SWITCH_TITLE_RE = re.compile(
         r"(?:围绕|切到|切换到|切回|回到)\s*(.+?)(?:文件|文档|资料)?(?:回答|继续|$|[，。！？\n])"
     )
-    _CURRENT_DOC_RE = re.compile(r"(刚才那份文件|刚才的文件|当前文件|当前文档|这份文件|这个文件)")
+    _CURRENT_DOC_RE = re.compile(r"(刚才那份文件|刚才的文件|当前文件|当前文档|当前主标书|当前标书|这份文件|这个文件)")
     _COMPARE_RE = re.compile(r"(对比|比较|比对)")
     _DIFFERENCE_RE = re.compile(r"(区别|差异|不同)")
     _PROJECT_RE = re.compile(r"(?:项目|project)\s*[：:]\s*(.+?)(?=\s*(?:任务|task)\s*[：:]|[，。！？\n]|$)", re.IGNORECASE)
@@ -330,6 +333,19 @@ class SessionDocumentScopeStore:
         match = self._ALIAS_BIND_RE.search(query or "")
         return self._normalize_alias(match.group(1)) if match else None
 
+    def _extract_alias_bind_title_candidate(self, query: str, alias: str) -> str | None:
+        match = self._ALIAS_BIND_TITLE_RE.search(query or "")
+        if not match:
+            return None
+        matched_alias = self._normalize_alias(match.group(2))
+        if matched_alias != self._normalize_alias(alias):
+            return None
+        raw_title = match.group(1) or ""
+        if "@" in raw_title or self._CURRENT_DOC_RE.search(raw_title):
+            return None
+        title = self._clean_alias_bind_title(raw_title)
+        return title or None
+
     def _extract_aliases(self, query: str) -> list[str]:
         return self._unique([self._normalize_alias(match.group(1)) for match in self._ALIAS_RE.finditer(query or "")])
 
@@ -354,6 +370,9 @@ class SessionDocumentScopeStore:
     ) -> DocumentScopeDecision:
         normalized_alias = self._normalize_alias(alias)
         titles = self._extract_title_candidates(query)
+        if not titles:
+            alias_bind_title = self._extract_alias_bind_title_candidate(query, normalized_alias)
+            titles = [alias_bind_title] if alias_bind_title else []
         documents = self._resolve_titles([titles[0]], filters, resolver) if titles else []
         document: ResolvedDocument | None = documents[0] if documents else None
         source = "alias_bind_title"
@@ -384,6 +403,24 @@ class SessionDocumentScopeStore:
                         bind_failure_reason=None,
                     ),
                 )
+
+        if document is None and titles:
+            return self._decision(
+                filters=filters,
+                state=state,
+                source="file_alias",
+                status="alias_bind_pending_title_retrieval",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                alias_trace=self._alias_trace(
+                    status="alias_bind_pending_title_retrieval",
+                    alias=normalized_alias,
+                    alias_missing=False,
+                    alias_conflict=False,
+                    bind_failure_reason=None,
+                ),
+            )
 
         existing = self._get_alias(session_key, normalized_alias)
         alias_conflict = bool(existing and document and existing.document_id != document.document_id)
@@ -623,7 +660,11 @@ class SessionDocumentScopeStore:
         decision: DocumentScopeDecision,
         documents: list[ResolvedDocument | dict[str, Any]],
     ) -> DocumentScopeDecision:
-        if decision.trace.get("scope_resolution_status") != "alias_bind_pending_current_retrieval":
+        pending_status = str(decision.trace.get("scope_resolution_status") or "")
+        if pending_status not in {
+            "alias_bind_pending_current_retrieval",
+            "alias_bind_pending_title_retrieval",
+        }:
             return decision
 
         session_key = session_id or ""
@@ -636,7 +677,10 @@ class SessionDocumentScopeStore:
         unique_by_id = {document.document_id: document for document in resolved_documents}
 
         if len(unique_by_id) != 1:
-            reason = "no_active_document" if not unique_by_id else "ambiguous_current_retrieval"
+            if pending_status == "alias_bind_pending_title_retrieval":
+                reason = "no_title_retrieval_match" if not unique_by_id else "ambiguous_title_retrieval"
+            else:
+                reason = "no_active_document" if not unique_by_id else "ambiguous_current_retrieval"
             trace = dict(decision.trace)
             alias_trace = self._alias_trace(
                 status="alias_bind_failed",
@@ -665,7 +709,11 @@ class SessionDocumentScopeStore:
             version_id=document.version_id,
             source_name=document.source_name,
             alias_scope="session",
-            scope_source="alias_bind_current_retrieval",
+            scope_source=(
+                "alias_bind_title_retrieval"
+                if pending_status == "alias_bind_pending_title_retrieval"
+                else "alias_bind_current_retrieval"
+            ),
             updated_at=self._now(),
         )
         self._session_aliases(session_key)[alias] = binding
@@ -813,6 +861,11 @@ class SessionDocumentScopeStore:
             if cleaned.endswith(suffix) and len(cleaned) > len(suffix):
                 cleaned = cleaned[: -len(suffix)].strip()
         return cleaned
+
+    def _clean_alias_bind_title(self, title: str) -> str:
+        cleaned = self._clean_title(title)
+        cleaned = re.sub(r"^(绑定|先绑定|请绑定)\s*", "", cleaned).strip()
+        return cleaned.strip(" \t\r\n，。！？:：")
 
     def _clean_context_hint(self, value: str) -> str:
         return re.sub(r"\s+", " ", value or "").strip(" \t\r\n，。！？:：")
