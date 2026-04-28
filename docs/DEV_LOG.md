@@ -36,3 +36,5 @@
 - [Phase 2.24a] Codex C 真实终端复验通过，5 条验收全过，stale fact 检出且 facts_as_answer 全场景为 false。
 - [Phase 2.30b] 修复标题类 alias 绑定 fallback：当 resolver 未命中但同轮 retrieval 可找到唯一文件时，session alias 会完成绑定；direct assertion tests 覆盖 alias bind/use、fallback failure 与 compare alias。
 - [Phase 2.30b] 补齐无书名号 alias 绑定：会议纪要文件、硬件清单、C塔方案、当前主标书 / 当前标书均进入正确 bind path；direct assertion tests 增至 53 个测试函数通过。
+- [Phase 2.34] 修复 Day-1 Q8 compare false-positive：最终 evidence 只含 compare 文档时输出 `third_document_mixed=false`，过滤过的候选第三文档只作为 `out_of_scope_document_ids_filtered` 诊断；真实第三文档 evidence 仍会触发 `unexpected_document_id`。
+- [Phase 2.34] Codex C 真实终端复验通过：Q8 compare 未再误报第三文件污染，facts/transcript 边界抽样保持 false。

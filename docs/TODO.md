@@ -115,3 +115,14 @@
 - 待 Codex C 复跑 12 条 Pilot query，重点覆盖 `@硬件清单`、`@会议纪要`、`@C塔方案` 与 `@会议纪要 vs @主标书`。
 - 已补齐 Pilot runbook 原文 alias 绑定覆盖：无书名号 `把会议纪要文件设为 @会议纪要`、`把硬件清单设为 @硬件清单`、`把C塔方案设为 @C塔方案` 均可走 title retrieval fallback。
 - `把当前主标书设为 @主标书` / `把当前标书设为 @主标书` 可按 current document binding 或 current retrieval fallback 处理，不误复用旧 alias 或无关文件。
+
+## Phase 2.34
+
+- 已完成 Day-1 Pilot Q8 compare false-positive 最小修复：当最终 `retrieval_evidence_document_ids` 均属于 `compare_document_ids` 时，trace 明确输出 `third_document_mixed=false`。
+- `out_of_scope_document_ids_filtered` 仅记录候选过滤诊断，不再作为最终 `contamination_flags` 中的第三文件污染标记。
+- 若最终 evidence 中仍出现 compare scope 外的 document_id，继续输出 `third_document_mixed=true` 与 `unexpected_document_id`，不压制真实污染。
+- context block 已补 compare scope 提示，要求模型不要把主题差异、partial evidence 或已过滤候选误说成 third-document contamination。
+- Codex C 真实终端复验已通过：`@会议纪要 vs @主标书` compare 输出 `third_document_mixed=false`、`third_document_mixed_document_ids=[]`、`contaminationflags=none`，无第三文件污染误报。
+- Facts / transcript 抽样保持 `facts_context_used=false`、`facts_context_fact_ids=[]`、`facts_as_answer=false`、`transcript_as_fact=false`。
+- Day-1 P1 backlog 仍保留：`@主标书` 最高投标限价 Missing Evidence，资质 / 经理 / 联合体 / 业绩 / 人员等深层字段需人工复核。
+- Day-1 P2 backlog 仍保留：会议纪要决策 / 公司方向分析长输出延迟，本轮不做 latency 优化。

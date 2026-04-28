@@ -192,13 +192,17 @@ class MemoryKernel:
 
         filtered_items = [item for item in retrieval.items if item.document_id in allowed_ids]
         filtered_citations = [citation for citation in retrieval.citations if citation.document_id in allowed_ids]
+        original_document_ids = self._returned_document_ids(retrieval.items, retrieval.citations)
         returned_document_ids = self._returned_document_ids(filtered_items, filtered_citations)
+        filtered_out_document_ids = [document_id for document_id in original_document_ids if document_id not in allowed_ids]
         trace = dict(retrieval.trace or {})
         trace["returned_document_ids"] = returned_document_ids
         trace["compare_document_ids"] = list(scope_decision.allowed_document_ids or []) if scope_decision.cross_document_allowed else []
         trace["document_scope_filter"] = {
             "allowed_document_ids": list(scope_decision.allowed_document_ids or []),
             "cross_document_allowed": scope_decision.cross_document_allowed,
+            "input_document_ids": original_document_ids,
+            "filtered_out_document_ids": filtered_out_document_ids,
             "items_before": len(retrieval.items),
             "items_after": len(filtered_items),
             "citations_before": len(retrieval.citations),
@@ -504,14 +508,16 @@ class MemoryKernel:
         if allowed_ids and not evidence_document_ids:
             flags.append("no_current_retrieval_evidence")
         unexpected_ids = [document_id for document_id in evidence_document_ids if document_id not in allowed_ids]
+        trace["third_document_mixed"] = bool(unexpected_ids)
+        trace["third_document_mixed_document_ids"] = unexpected_ids
+        if scope_decision.cross_document_allowed:
+            trace["compare_scope_document_ids"] = list(scope_decision.allowed_document_ids or [])
+            trace["compare_evidence_document_ids_within_scope"] = bool(allowed_ids) and not unexpected_ids
         if allowed_ids and unexpected_ids:
             flags.append("unexpected_document_id")
         scope_filter = trace.get("document_scope_filter") or {}
-        if (
-            scope_filter.get("items_before", 0) > scope_filter.get("items_after", 0)
-            or scope_filter.get("citations_before", 0) > scope_filter.get("citations_after", 0)
-        ):
-            flags.append("out_of_scope_evidence_filtered")
+        if scope_filter.get("filtered_out_document_ids"):
+            trace["out_of_scope_document_ids_filtered"] = list(scope_filter.get("filtered_out_document_ids") or [])
         if scope_decision.cross_document_allowed and allowed_ids and set(evidence_document_ids) != allowed_ids:
             flags.append("compare_scope_partial_evidence")
         return flags

@@ -837,7 +837,95 @@ def test_document_scope_filter_removes_third_document_evidence():
     assert filtered.trace["document_scope_filter"]["items_after"] == 2
     governed = kernel._with_context_governance_trace(filtered.trace, filtered, decision)
     assert governed["retrieval_evidence_document_ids"] == ["doc-a", "doc-b"]
-    assert "out_of_scope_evidence_filtered" in governed["contamination_flags"]
+    assert governed["third_document_mixed"] is False
+    assert governed["third_document_mixed_document_ids"] == []
+    assert governed["out_of_scope_document_ids_filtered"] == ["doc-c"]
+    assert "out_of_scope_evidence_filtered" not in governed["contamination_flags"]
+    assert "unexpected_document_id" not in governed["contamination_flags"]
+
+
+def test_compare_scope_does_not_flag_third_document_when_evidence_is_subset():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="A evidence"),
+            KernelItem(chunk_id="b1", document_id="doc-b", version_id="v2", text="B evidence"),
+        ],
+        citations=[
+            KernelCitation(document_id="doc-a", version_id="v1", chunk_id="a1"),
+            KernelCitation(document_id="doc-b", version_id="v2", chunk_id="b1"),
+        ],
+        backend="fake",
+    )
+    decision = DocumentScopeDecision(
+        filters={},
+        trace={
+            "document_scope_source": "query_compare_titles",
+            "scope_resolution_status": "multi_document_resolved",
+            "cross_document_allowed": True,
+            "compare_document_ids": ["doc-a", "doc-b"],
+        },
+        allowed_document_ids=["doc-a", "doc-b"],
+        cross_document_allowed=True,
+    )
+
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    governed = kernel._with_context_governance_trace({}, retrieval, decision)
+
+    assert governed["retrieval_evidence_document_ids"] == ["doc-a", "doc-b"]
+    assert governed["third_document_mixed"] is False
+    assert governed["third_document_mixed_document_ids"] == []
+    assert governed["contamination_flags"] == []
+
+
+def test_compare_scope_still_flags_actual_third_document_evidence():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="A evidence"),
+            KernelItem(chunk_id="c1", document_id="doc-c", version_id="v3", text="C evidence"),
+        ],
+        citations=[],
+        backend="fake",
+    )
+    decision = DocumentScopeDecision(
+        filters={},
+        trace={
+            "document_scope_source": "query_compare_titles",
+            "scope_resolution_status": "multi_document_resolved",
+            "cross_document_allowed": True,
+            "compare_document_ids": ["doc-a", "doc-b"],
+        },
+        allowed_document_ids=["doc-a", "doc-b"],
+        cross_document_allowed=True,
+    )
+
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    governed = kernel._with_context_governance_trace({}, retrieval, decision)
+
+    assert governed["retrieval_evidence_document_ids"] == ["doc-a", "doc-c"]
+    assert governed["third_document_mixed"] is True
+    assert governed["third_document_mixed_document_ids"] == ["doc-c"]
+    assert "unexpected_document_id" in governed["contamination_flags"]
+
+
+def test_context_block_tells_model_not_to_report_false_third_document_mixing():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="A evidence"),
+            KernelItem(chunk_id="b1", document_id="doc-b", version_id="v2", text="B evidence"),
+        ],
+        backend="fake",
+        trace={
+            "compare_document_ids": ["doc-a", "doc-b"],
+            "retrieval_evidence_document_ids": ["doc-a", "doc-b"],
+            "third_document_mixed": False,
+            "third_document_mixed_document_ids": [],
+        },
+    )
+
+    context = ContextBuilder().build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "third_document_mixed=false" in context
+    assert "do not describe this compare as third-document contamination" in context
 
 
 def test_multi_document_compare_runs_scoped_retrieval_for_each_document_and_merges():

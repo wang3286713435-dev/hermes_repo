@@ -221,6 +221,20 @@ class ContextBuilder:
                 f"meeting_fields_matched={trace.get('meeting_fields_matched', [])}; "
                 f"meeting_source_chunk_ids={trace.get('meeting_source_chunk_ids', [])}"
             )
+        compare_document_ids = trace.get("compare_document_ids") or trace.get("compare_scope_document_ids") or []
+        if compare_document_ids:
+            evidence_document_ids = trace.get("retrieval_evidence_document_ids", [])
+            third_document_mixed = "true" if trace.get("third_document_mixed") else "false"
+            lines.append(
+                f"compare_scope: compare_document_ids={compare_document_ids}; "
+                f"retrieval_evidence_document_ids={evidence_document_ids}; "
+                f"third_document_mixed={third_document_mixed}; "
+                f"third_document_mixed_document_ids={trace.get('third_document_mixed_document_ids', [])}"
+            )
+            lines.append(
+                "If third_document_mixed=false, do not describe this compare as third-document contamination. "
+                "Theme mismatch or partial evidence is not third-document mixing."
+            )
         return lines
 
     def _facts_diagnostic_lines(self, trace: dict) -> list[str]:
