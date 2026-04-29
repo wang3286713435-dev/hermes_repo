@@ -38,3 +38,5 @@
 - [Phase 2.30b] 补齐无书名号 alias 绑定：会议纪要文件、硬件清单、C塔方案、当前主标书 / 当前标书均进入正确 bind path；direct assertion tests 增至 53 个测试函数通过。
 - [Phase 2.34] 修复 Day-1 Q8 compare false-positive：最终 evidence 只含 compare 文档时输出 `third_document_mixed=false`，过滤过的候选第三文档只作为 `out_of_scope_document_ids_filtered` 诊断；真实第三文档 evidence 仍会触发 `unexpected_document_id`。
 - [Phase 2.34] Codex C 真实终端复验通过：Q8 compare 未再误报第三文件污染，facts/transcript 边界抽样保持 false。
+- [Phase 2.35c] 修复 alias/session 绑定语义覆盖缺口：`上一轮已锁定的当前文件` 类提示现在进入 current-document bind / retrieval fallback；新增 direct assertion 覆盖跨进程状态恢复与 run_agent pre-resolved scope。
+- [Phase 2.35c] Codex C 真实终端复验通过：`@主标书` bind 后正式 Q1/Q2 稳定 alias_resolved，不再 alias_missing 或 retrieval_suppressed；deep-field recall 仍 partial。

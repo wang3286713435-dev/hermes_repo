@@ -554,6 +554,35 @@ def test_session_file_alias_current_main_tender_binds_active_document_without_ti
     assert decision.filters["version_id"] == "v1"
 
 
+def test_session_file_alias_previous_locked_current_file_binds_active_document_without_title_lookup():
+    class Resolver:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, titles, filters):
+            self.calls.append((titles, filters))
+            return _resolver(titles, filters)
+
+    store = SessionDocumentScopeStore()
+    resolver = Resolver()
+    store.resolve(session_id="s1", query="请围绕《A标书》回答", filters={}, resolver=resolver)
+    resolver.calls.clear()
+
+    decision = store.resolve(
+        session_id="s1",
+        query="请把上一轮已锁定的当前文件设为 @主标书",
+        filters={},
+        resolver=resolver,
+    )
+
+    assert resolver.calls == []
+    assert decision.trace["alias_resolution"]["status"] == "alias_bound"
+    assert decision.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+    assert decision.trace["alias_version_id"] == "v1"
+    assert decision.filters["document_id"] == "doc-a"
+    assert decision.filters["version_id"] == "v1"
+
+
 def test_session_file_alias_current_tender_without_active_document_uses_retrieval_fallback(tmp_path):
     class FakeRetrieval:
         def __init__(self):
@@ -589,6 +618,127 @@ def test_session_file_alias_current_tender_without_active_document_uses_retrieva
     assert fake_retrieval.requests[0].document_scope["scope_resolution_status"] == "alias_bind_pending_current_retrieval"
     assert result.trace["alias_resolution"]["status"] == "alias_bound"
     assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+
+
+def test_session_file_alias_previous_locked_current_file_fallback_persists_across_store_instances(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            document_id = request.filters.get("document_id") or "doc-a"
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id=f"{document_id}-1",
+                        document_id=document_id,
+                        version_id="v1",
+                        text="A evidence",
+                        source_name="A标书",
+                    )
+                ],
+                citations=[
+                    KernelCitation(
+                        document_id=document_id,
+                        version_id="v1",
+                        chunk_id=f"{document_id}-1",
+                        source_name="A标书",
+                    )
+                ],
+                backend="fake",
+            )
+
+    scope_path = tmp_path / "scope.json"
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(scope_path)
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+
+    result = kernel.start_turn(KernelRequest(query="请把上一轮已锁定的当前文件设为 @主标书", session_id="s1"))
+
+    assert fake_retrieval.requests
+    assert fake_retrieval.requests[0].document_scope["scope_resolution_status"] == "alias_bind_pending_current_retrieval"
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+
+    kernel_after_resume = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel_after_resume.document_scope = SessionDocumentScopeStore(scope_path)
+    kernel_after_resume.retrieval = fake_retrieval
+    resumed = kernel_after_resume.start_turn(KernelRequest(query="围绕 @主标书 回答", session_id="s1"))
+
+    assert resumed.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert resumed.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+    assert resumed.trace["alias_missing"] is False
+    assert resumed.trace.get("retrieval_suppressed") is not True
+    assert fake_retrieval.requests[-1].filters["document_id"] == "doc-a"
+    assert fake_retrieval.requests[-1].filters["version_id"] == "v1"
+
+
+def test_run_agent_pre_resolved_previous_locked_current_alias_persists_for_resume(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="doc-a-1",
+                        document_id="doc-a",
+                        version_id="v1",
+                        text="A evidence",
+                        source_name="A标书",
+                    )
+                ],
+                citations=[
+                    KernelCitation(
+                        document_id="doc-a",
+                        version_id="v1",
+                        chunk_id="doc-a-1",
+                        source_name="A标书",
+                    )
+                ],
+                backend="fake",
+            )
+
+    scope_path = tmp_path / "scope.json"
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(scope_path)
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+    query = "请把上一轮已锁定的当前文件设为 @主标书"
+    pre_resolved_scope = kernel.resolve_document_scope(session_id="s1", query=query, filters={})
+
+    result = kernel.start_turn(
+        KernelRequest(
+            query=query,
+            session_id="s1",
+            document_scope=pre_resolved_scope.trace,
+            allowed_document_ids=pre_resolved_scope.allowed_document_ids,
+            cross_document_allowed=pre_resolved_scope.cross_document_allowed,
+        )
+    )
+    resumed_scope = SessionDocumentScopeStore(scope_path).resolve(
+        session_id="s1",
+        query="围绕 @主标书 回答",
+        filters={},
+        resolver=fake_retrieval.resolve_document_titles,
+    )
+
+    assert pre_resolved_scope.trace["scope_resolution_status"] == "alias_bind_pending_current_retrieval"
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert resumed_scope.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert resumed_scope.filters["document_id"] == "doc-a"
+    assert resumed_scope.filters["version_id"] == "v1"
+    assert resumed_scope.suppress_retrieval is False
 
 
 def test_session_file_alias_title_bind_failure_does_not_suppress_retrieval(tmp_path):

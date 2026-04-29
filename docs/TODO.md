@@ -126,3 +126,12 @@
 - Facts / transcript 抽样保持 `facts_context_used=false`、`facts_context_fact_ids=[]`、`facts_as_answer=false`、`transcript_as_fact=false`。
 - Day-1 P1 backlog 仍保留：`@主标书` 最高投标限价 Missing Evidence，资质 / 经理 / 联合体 / 业绩 / 人员等深层字段需人工复核。
 - Day-1 P2 backlog 仍保留：会议纪要决策 / 公司方向分析长输出延迟，本轮不做 latency 优化。
+
+## Phase 2.35c
+
+- 修复真实终端复验暴露的 alias/session 阻断：`请把上一轮已锁定的当前文件设为 @主标书` 现在会被识别为 current-document binding。
+- 若当前 session 已有 active document，则直接绑定 active document；若没有 active document，则通过同轮唯一 retrieval evidence 完成 alias bind 并持久化。
+- 新增 direct assertion tests 覆盖跨 `SessionDocumentScopeStore` 实例 resume、run_agent pre-resolved scope、missing alias suppress 与 compare 相邻路径。
+- 主仓库 session scope 回归已用 `.venv/bin/python -m pytest -o addopts='' tests/agent/test_session_document_scope.py -q` 复跑通过：`48 passed`。
+- Codex C 真实终端复验已通过：正式 Q1/Q2 均为 `alias_resolved`，`alias_missing=false`，`retrieval_suppressed=false`。
+- 当前可进入 Phase 2.35c baseline，但 baseline 只能声明 alias/session 修复收口，不能声明 deep-field recall 完全收口。

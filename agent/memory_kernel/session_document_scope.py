@@ -66,7 +66,14 @@ class SessionDocumentScopeStore:
     _SWITCH_TITLE_RE = re.compile(
         r"(?:围绕|切到|切换到|切回|回到)\s*(.+?)(?:文件|文档|资料)?(?:回答|继续|$|[，。！？\n])"
     )
-    _CURRENT_DOC_RE = re.compile(r"(刚才那份文件|刚才的文件|当前文件|当前文档|当前主标书|当前标书|这份文件|这个文件)")
+    _CURRENT_DOC_RE = re.compile(
+        r"("
+        r"刚才那份文件|刚才的文件|当前文件|当前文档|当前主标书|当前标书|这份文件|这个文件|"
+        r"上一轮已锁定的当前文件|上一轮锁定的当前文件|已锁定的当前文件|"
+        r"上一轮已锁定文件|上一轮锁定文件|已锁定文件|"
+        r"上次已锁定的当前文件|上一步已锁定的当前文件"
+        r")"
+    )
     _COMPARE_RE = re.compile(r"(对比|比较|比对)")
     _DIFFERENCE_RE = re.compile(r"(区别|差异|不同)")
     _PROJECT_RE = re.compile(r"(?:项目|project)\s*[：:]\s*(.+?)(?=\s*(?:任务|task)\s*[：:]|[，。！？\n]|$)", re.IGNORECASE)
