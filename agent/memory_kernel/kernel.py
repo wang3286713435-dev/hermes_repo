@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import replace
 
 from hermes_constants import get_hermes_home
@@ -113,6 +114,85 @@ class MemoryKernel:
     def finish_turn(self, request: KernelRequest, response: str, result: KernelResult) -> None:
         # TODO Phase 2: write retrieval/citation trace and safe memory writeback.
         return None
+
+    _PERSONNEL_FORBIDDEN_ANSWER_TERMS = ("项目经理", "项目负责人", "注册建造师", "一级建造师", "B证", "安全考核证", "投标资质", "联合体", "类似工程业绩")
+    _PERSONNEL_FORBIDDEN_COUNT_PHRASES = ("每个项目限1人", "每个项目只能1个", "每个项目各1人", "每项目1人", "每项目各1人", "每类1人", "每个岗位1人", "各1人", "至少各1名")
+    _PERSONNEL_COUNT_PATTERNS = (
+        re.compile(r"每(?:个)?(?:项目|岗位|类别|类|项)[^，。；;\n]{0,8}(?:1|一)(?:人|名|个)"),
+        re.compile(r"(?:至少)?各(?:1|一)(?:人|名)"),
+    )
+
+    def apply_personnel_answer_guard(self, request: KernelRequest, response: str, result: KernelResult) -> str:
+        decision = self._personnel_answer_guard_decision(request, response, result)
+        result.trace["personnel_answer_guard"] = decision
+        if isinstance(result.retrieval.trace, dict):
+            result.retrieval.trace["personnel_answer_guard"] = dict(decision)
+        if not decision.get("fallback_applied"):
+            return response
+        decision["fallback_response_applied"] = True
+        return self._personnel_safe_fallback_response()
+
+    def _personnel_answer_guard_decision(self, request: KernelRequest, response: str, result: KernelResult) -> dict:
+        trace = result.trace or {}
+        retrieval_trace = result.retrieval.trace or {}
+        profile = trace.get("deep_field_profile") or retrieval_trace.get("deep_field_profile")
+        metadata_profile = trace.get("metadata_deep_field_profile") or retrieval_trace.get("metadata_deep_field_profile")
+        is_personnel_scope = "personnel_scope" in {profile, metadata_profile}
+        is_qualification_scope = "qualification_scope" in {profile, metadata_profile}
+        personnel_only_query = self._is_personnel_only_query(request.query)
+        applicable = bool(is_personnel_scope and personnel_only_query and not is_qualification_scope)
+        forbidden_terms = self._detected_personnel_forbidden_terms(response) if applicable else []
+        forbidden_counts = self._detected_personnel_count_inferences(response) if applicable else []
+        fallback_applied = bool(applicable and (forbidden_terms or forbidden_counts))
+        return {
+            "applicable": applicable,
+            "profile": profile,
+            "metadata_profile": metadata_profile,
+            "personnel_only_query": personnel_only_query,
+            "forbidden_terms_detected": forbidden_terms,
+            "forbidden_count_inferences_detected": forbidden_counts,
+            "fallback_applied": fallback_applied,
+            "facts_as_answer": False,
+            "transcript_as_fact": False,
+        }
+
+    def _is_personnel_only_query(self, query: str) -> bool:
+        text = query or ""
+        if "只回答人员要求" in text:
+            return True
+        if "人员" in text and any(marker in text for marker in ("不要回答", "不回答", "不要包含", "排除")):
+            return True
+        broad_hits = sum(1 for term in ("投标资质", "项目经理", "联合体", "业绩") if term in text)
+        if broad_hits >= 3 and "分别" in text:
+            return False
+        return any(term in text for term in ("人员数量", "人员要求", "人员配备", "人员专业", "人员资质", "项目人员", "主要人员", "项目管理机构"))
+
+    def _detected_personnel_forbidden_terms(self, response: str) -> list[str]:
+        return [term for term in self._PERSONNEL_FORBIDDEN_ANSWER_TERMS if term in (response or "")]
+
+    def _detected_personnel_count_inferences(self, response: str) -> list[str]:
+        compact = re.sub(r"\s+", "", response or "")
+        detected = [phrase for phrase in self._PERSONNEL_FORBIDDEN_COUNT_PHRASES if phrase in compact]
+        for pattern in self._PERSONNEL_COUNT_PATTERNS:
+            for match in pattern.findall(compact):
+                if match not in detected:
+                    detected.append(match)
+        return detected
+
+    def _personnel_safe_fallback_response(self) -> str:
+        return (
+            "人员要求（仅限人员字段，已触发安全降级）\n\n"
+            "| 字段 | 结论 |\n"
+            "|---|---|\n"
+            "| 人数 | Missing Evidence / 人工复核 |\n"
+            "| 专业 | Missing Evidence / 人工复核 |\n"
+            "| 职称 | Missing Evidence / 人工复核 |\n"
+            "| 资质 | Missing Evidence / 人工复核 |\n"
+            "| 证明材料 | Missing Evidence / 人工复核 |\n\n"
+            "说明：原始输出命中人员-only 安全边界，已改为保守结果；请以 citations 对应原文人工复核。\n"
+            "facts_as_answer=false\n"
+            "transcript_as_fact=false"
+        )
 
     def mark_history_memory_usage(self, result: KernelResult, used: bool) -> None:
         trace = result.trace
@@ -233,8 +313,16 @@ class MemoryKernel:
             for field in (
                 "metadata_snapshot",
                 "metadata_snapshot_used",
+                "metadata_snapshot_status",
+                "metadata_guided_query_profile",
+                "metadata_deep_field_profile",
                 "metadata_fields_matched",
                 "metadata_source_chunk_ids",
+                "deep_field_profile",
+                "deep_field_section_hints",
+                "deep_field_query_aliases",
+                "deep_field_missing_reason",
+                "deep_field_diagnostics",
                 "evidence_required",
                 "snapshot_as_answer",
                 "meeting_transcript_used",

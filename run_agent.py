@@ -11695,6 +11695,23 @@ class AIAgent:
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
+        if self._memory_kernel and _memory_kernel_request and _memory_kernel_result and final_response and not interrupted:
+            try:
+                _guarded_response = self._memory_kernel.apply_personnel_answer_guard(
+                    _memory_kernel_request,
+                    final_response,
+                    _memory_kernel_result,
+                )
+                if _guarded_response != final_response:
+                    final_response = _guarded_response
+                    for _msg in reversed(messages):
+                        if isinstance(_msg, dict) and _msg.get("role") == "assistant" and not _msg.get("tool_calls"):
+                            _msg["content"] = final_response
+                            break
+                    logger.info("Personnel-only answer guard replaced final response with safe fallback")
+            except Exception as exc:
+                logger.warning("Personnel-only answer guard failed: %s", exc)
+
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.
         self._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)

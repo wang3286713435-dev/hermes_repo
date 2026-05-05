@@ -3,7 +3,9 @@ from __future__ import annotations
 from agent.memory_kernel.citation_engine import CitationEngine
 from agent.memory_kernel.adapters.hermes_memory_adapter import HermesMemoryAdapter
 from agent.memory_kernel.context_builder import ContextBuilder
-from agent.memory_kernel.interfaces import KernelCitation, KernelItem, RetrievalOutput
+from agent.memory_kernel.interfaces import KernelCitation, KernelItem, KernelResult, QueryRoute, KernelRequest, RetrievalOutput
+from agent.memory_kernel.kernel import MemoryKernel
+from agent.memory_kernel.session_document_scope import DocumentScopeDecision
 
 
 def test_citation_engine_preserves_excel_metadata_from_items():
@@ -188,3 +190,248 @@ def test_adapter_flattens_meeting_trace_as_non_fact():
     assert trace["meeting_source_chunk_ids"] == ["m1"]
     assert trace["transcript_as_fact"] is False
     assert trace["evidence_required"] is True
+
+
+def test_adapter_flattens_deep_field_trace():
+    adapter = HermesMemoryAdapter.__new__(HermesMemoryAdapter)
+
+    trace = adapter._normalize_trace(
+        {
+            "retrieval_trace": {
+                "metadata_deep_field_profile": "pricing_scope",
+                "deep_field_profile": "pricing_scope",
+                "deep_field_section_hints": ["投标人须知前附表", "最高投标限价"],
+                "deep_field_query_aliases": ["最高投标限价", "招标控制价"],
+                "deep_field_missing_reason": "missing_concrete_price_amount",
+                "deep_field_diagnostics": {
+                    "status": "missing_concrete_evidence",
+                    "concrete_evidence_required": True,
+                    "concrete_evidence_missing_fields": ["price_ceiling"],
+                },
+            }
+        }
+    )
+
+    assert trace["metadata_deep_field_profile"] == "pricing_scope"
+    assert trace["deep_field_profile"] == "pricing_scope"
+    assert trace["deep_field_section_hints"] == ["投标人须知前附表", "最高投标限价"]
+    assert trace["deep_field_query_aliases"] == ["最高投标限价", "招标控制价"]
+    assert trace["deep_field_missing_reason"] == "missing_concrete_price_amount"
+    assert trace["deep_field_diagnostics"]["status"] == "missing_concrete_evidence"
+
+
+def test_kernel_promotes_deep_field_trace_from_retrieval_trace():
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    retrieval = RetrievalOutput(
+        items=[KernelItem(chunk_id="c1", document_id="doc-tender", version_id="v1", text="evidence")],
+        trace={
+            "retrieval_trace": {
+                "metadata_deep_field_profile": "qualification_scope",
+                "deep_field_profile": "qualification_scope",
+                "deep_field_section_hints": ["资格审查"],
+                "deep_field_query_aliases": ["资质要求"],
+                "deep_field_missing_reason": "missing_concrete_qualification_level_or_category",
+                "deep_field_diagnostics": {
+                    "status": "missing_concrete_evidence",
+                    "concrete_evidence_required": True,
+                    "concrete_evidence_missing_fields": ["qualification_requirement"],
+                },
+            }
+        },
+    )
+    decision = DocumentScopeDecision(filters={}, trace={})
+
+    trace = kernel._with_context_governance_trace(retrieval.trace, retrieval, decision)
+
+    assert trace["metadata_deep_field_profile"] == "qualification_scope"
+    assert trace["deep_field_profile"] == "qualification_scope"
+    assert trace["deep_field_section_hints"] == ["资格审查"]
+    assert trace["deep_field_query_aliases"] == ["资质要求"]
+    assert trace["deep_field_missing_reason"] == "missing_concrete_qualification_level_or_category"
+    assert trace["deep_field_diagnostics"]["concrete_evidence_missing_fields"] == ["qualification_requirement"]
+
+
+def test_context_builder_renders_deep_field_diagnostics():
+    retrieval = RetrievalOutput(
+        backend="fake",
+        trace={
+            "metadata_deep_field_profile": "pricing_scope",
+            "deep_field_profile": "pricing_scope",
+            "deep_field_section_hints": ["投标人须知前附表", "最高投标限价"],
+            "deep_field_query_aliases": ["最高投标限价", "招标控制价"],
+            "deep_field_missing_reason": "missing_concrete_price_amount",
+            "deep_field_diagnostics": {
+                "status": "missing_concrete_evidence",
+                "concrete_evidence_required": True,
+                "concrete_evidence_present": False,
+                "concrete_evidence_missing_fields": ["price_ceiling"],
+                "boosted_phrases_used": ["最高投标限价", "招标控制价"],
+            },
+        },
+    )
+
+    context = ContextBuilder().build(
+        QueryRoute("enterprise_retrieval", True, "test"),
+        retrieval,
+    )
+
+    assert "deep_field_profile=pricing_scope" in context
+    assert "metadata_deep_field_profile=pricing_scope" in context
+    assert "deep_field_missing_reason=missing_concrete_price_amount" in context
+    assert "deep_field_section_hints=['投标人须知前附表', '最高投标限价']" in context
+    assert "deep_field_query_aliases=['最高投标限价', '招标控制价']" in context
+    assert "concrete_evidence_missing_fields=['price_ceiling']" in context
+    assert "do not replace retrieval evidence or Missing Evidence" in context
+
+
+def test_context_builder_renders_personnel_answer_boundary():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(
+                chunk_id="personnel-1",
+                document_id="doc-1",
+                version_id="v1",
+                text="项目管理机构包括技术负责人、安全员、质量员、施工员。",
+                source_name="主标书",
+            )
+        ],
+        citations=[
+            KernelCitation(
+                document_id="doc-1",
+                version_id="v1",
+                chunk_id="personnel-1",
+                source_name="主标书",
+            )
+        ],
+        backend="fake",
+        trace={
+            "metadata_deep_field_profile": "personnel_scope",
+            "deep_field_profile": "personnel_scope",
+            "deep_field_section_hints": ["项目管理机构", "人员要求"],
+            "deep_field_query_aliases": ["人员数量", "人员专业", "人员资质"],
+            "deep_field_missing_reason": None,
+            "deep_field_diagnostics": {
+                "status": "concrete_evidence_found",
+                "concrete_evidence_required": False,
+                "concrete_evidence_present": True,
+                "concrete_evidence_missing_fields": [],
+                "boosted_phrases_used": ["项目管理机构", "人员配备"],
+            },
+        },
+    )
+
+    context = ContextBuilder().build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "personnel_answer_boundary" in context
+    assert "STRICT PERSONNEL-ONLY FINAL ANSWER GUARD" in context
+    assert "personnel_forbidden_answer_terms=" in context
+    assert "personnel_count_inference_forbidden=true" in context
+    assert "ignore_non_personnel_content_in_mixed_chunks=true" in context
+    assert "Forbidden in personnel-only answers" in context
+    assert "project manager / project lead / registered constructor / first-class constructor / B-certificate" in context
+    assert "项目经理 / 项目负责人 / 注册建造师 / 一级建造师 / B证 / 安全考核证 / 投标资质 / 联合体 / 类似工程业绩" in context
+    assert "'项目经理'" in context
+    assert "'注册建造师'" in context
+    assert "'B证'" in context
+    assert "'投标资质'" in context
+    assert "'联合体'" in context
+    assert "'类似工程业绩'" in context
+    assert "'每个项目限1人'" in context
+    assert "'每个项目只能1个'" in context
+    assert "'每个项目各1人'" in context
+    assert "'每项目1人'" in context
+    assert "'每项目各1人'" in context
+    assert "'每类1人'" in context
+    assert "'每个岗位1人'" in context
+    assert "'各1人'" in context
+    assert "'至少各1名'" in context
+    assert "personnel_violation_if_answer_contains_forbidden_term=true" in context
+    assert "personnel_violation_if_answer_contains_inferred_count=true" in context
+    assert "personnel_safe_fallback_required_on_violation=true" in context
+    assert "personnel_safe_fallback_template=人员要求（仅限人员字段）" in context
+    assert "discard the draft and output only the personnel_safe_fallback_template" in context
+    assert "If a cited chunk mixes personnel staffing with project manager" in context
+    assert "Do not convert role names into implicit counts" in context
+    assert "Never say each project has one" in context
+    assert "Missing Evidence / needs manual review for that subfield" in context
+
+
+def test_context_builder_does_not_apply_personnel_boundary_to_broad_qualification_scope():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(
+                chunk_id="qualification-1",
+                document_id="doc-1",
+                version_id="v1",
+                text="投标资质、项目经理、联合体、业绩、人员要求分别见资格审查章节。",
+                source_name="主标书",
+            )
+        ],
+        backend="fake",
+        trace={
+            "metadata_deep_field_profile": "qualification_scope",
+            "deep_field_profile": "qualification_scope",
+            "deep_field_section_hints": ["资格审查", "资信标"],
+            "deep_field_query_aliases": ["投标资质", "项目经理", "联合体", "类似工程业绩", "人员要求"],
+            "deep_field_diagnostics": {
+                "status": "mixed_deep_field_query",
+                "concrete_evidence_required": True,
+                "concrete_evidence_present": True,
+                "concrete_evidence_missing_fields": [],
+            },
+        },
+    )
+
+    context = ContextBuilder().build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "deep_field_profile=qualification_scope" in context
+    assert "personnel_answer_boundary" not in context
+    assert "personnel_forbidden_answer_terms" not in context
+    assert "personnel_count_inference_forbidden" not in context
+    assert "ignore_non_personnel_content_in_mixed_chunks" not in context
+    assert "personnel_safe_fallback_required_on_violation" not in context
+    assert "personnel_safe_fallback_template" not in context
+    assert "STRICT PERSONNEL-ONLY FINAL ANSWER GUARD" not in context
+
+def _personnel_guard_result(profile: str = "personnel_scope") -> KernelResult:
+    retrieval = RetrievalOutput(backend="fake", trace={"deep_field_profile": profile, "metadata_deep_field_profile": profile})
+    return KernelResult(route=QueryRoute("enterprise_retrieval", True, "test"), retrieval=retrieval, trace={"deep_field_profile": profile, "metadata_deep_field_profile": profile})
+
+
+def test_kernel_personnel_answer_guard_fallbacks_on_forbidden_term():
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    request = KernelRequest(query="@主标书 人员要求是什么？请只回答人员要求。", session_id="s1")
+    guarded = kernel.apply_personnel_answer_guard(request, "人员要求包括项目经理和安全员。", _personnel_guard_result())
+    assert "项目经理" not in guarded
+    assert "Missing Evidence / 人工复核" in guarded
+    assert "facts_as_answer=false" in guarded
+    assert "transcript_as_fact=false" in guarded
+
+
+def test_kernel_personnel_answer_guard_fallbacks_on_count_inference():
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    request = KernelRequest(query="@主标书 人员数量、专业、职称或资质要求是什么？请只回答人员要求。", session_id="s1")
+    result = _personnel_guard_result()
+    guarded = kernel.apply_personnel_answer_guard(request, "人员配置为施工员、安全员，每项目各1人。", result)
+    assert "每项目各1人" not in guarded
+    assert "Missing Evidence / 人工复核" in guarded
+    assert result.trace["personnel_answer_guard"]["fallback_applied"] is True
+
+
+def test_kernel_personnel_answer_guard_does_not_apply_to_broad_qualification_scope():
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    request = KernelRequest(query="@主标书 投标资质、项目经理、联合体、业绩、人员要求分别是什么？", session_id="s1")
+    response = "项目经理、联合体、类似工程业绩和人员要求分别如下。"
+    guarded = kernel.apply_personnel_answer_guard(request, response, _personnel_guard_result("qualification_scope"))
+    assert guarded == response
+
+
+def test_kernel_personnel_safe_fallback_has_no_forbidden_terms_or_counts():
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    fallback = kernel._personnel_safe_fallback_response()
+    for term in kernel._PERSONNEL_FORBIDDEN_ANSWER_TERMS:
+        assert term not in fallback
+    for phrase in kernel._PERSONNEL_FORBIDDEN_COUNT_PHRASES:
+        assert phrase not in fallback
+    assert "facts_as_answer=false" in fallback
+    assert "transcript_as_fact=false" in fallback

@@ -214,6 +214,9 @@ class ContextBuilder:
                 f"metadata_fields_matched={trace.get('metadata_fields_matched', [])}; "
                 f"metadata_source_chunk_ids={trace.get('metadata_source_chunk_ids', [])}"
             )
+        deep_field_lines = self._deep_field_lines(trace)
+        if deep_field_lines:
+            lines.extend(deep_field_lines)
         if trace.get("meeting_transcript_used"):
             lines.append(
                 "meeting_transcript_used=true; transcript_as_fact=false; evidence_required=true; "
@@ -234,6 +237,61 @@ class ContextBuilder:
             lines.append(
                 "If third_document_mixed=false, do not describe this compare as third-document contamination. "
                 "Theme mismatch or partial evidence is not third-document mixing."
+            )
+        return lines
+
+    def _deep_field_lines(self, trace: dict) -> list[str]:
+        profile = trace.get("deep_field_profile")
+        metadata_profile = trace.get("metadata_deep_field_profile")
+        diagnostics = trace.get("deep_field_diagnostics") or {}
+        if not any(
+            [
+                profile,
+                metadata_profile,
+                trace.get("deep_field_section_hints"),
+                trace.get("deep_field_query_aliases"),
+                trace.get("deep_field_missing_reason"),
+                diagnostics,
+            ]
+        ):
+            return []
+
+        lines = [
+            "deep_field_diagnostics are routing diagnostics only; they do not replace retrieval evidence or Missing Evidence.",
+            f"deep_field_profile={profile}; metadata_deep_field_profile={metadata_profile}; "
+            f"deep_field_missing_reason={trace.get('deep_field_missing_reason')}",
+            f"deep_field_section_hints={trace.get('deep_field_section_hints', [])}",
+            f"deep_field_query_aliases={trace.get('deep_field_query_aliases', [])}",
+        ]
+        if isinstance(diagnostics, dict) and diagnostics:
+            lines.append(
+                "deep_field_diagnostics: "
+                f"status={diagnostics.get('status')}; "
+                f"concrete_evidence_required={bool(diagnostics.get('concrete_evidence_required'))}; "
+                f"concrete_evidence_present={bool(diagnostics.get('concrete_evidence_present'))}; "
+                f"concrete_evidence_missing_fields={diagnostics.get('concrete_evidence_missing_fields', [])}; "
+                f"boosted_phrases_used={diagnostics.get('boosted_phrases_used', [])}"
+            )
+        if profile == "personnel_scope" or metadata_profile == "personnel_scope":
+            lines.extend(
+                [
+                    "personnel_answer_boundary: STRICT PERSONNEL-ONLY FINAL ANSWER GUARD.",
+                    "personnel_forbidden_answer_terms=['项目经理', '项目负责人', '注册建造师', '一级建造师', 'B证', '安全考核证', '投标资质', '联合体', '类似工程业绩']",
+                    "personnel_count_inference_forbidden=true; forbidden_count_inferences=['每个项目限1人', '每个项目只能1个', '每个项目各1人', '每项目1人', '每项目各1人', '每类1人', '每个岗位1人', '各1人', '至少各1名']",
+                    "ignore_non_personnel_content_in_mixed_chunks=true",
+                    "personnel_violation_if_answer_contains_forbidden_term=true",
+                    "personnel_violation_if_answer_contains_inferred_count=true",
+                    "personnel_safe_fallback_required_on_violation=true",
+                    "personnel_safe_fallback_template=人员要求（仅限人员字段）: 数量: Missing Evidence / 人工复核; 专业: Missing Evidence / 人工复核; 职称: Missing Evidence / 人工复核; 资质: Missing Evidence / 人工复核; 证明材料: Missing Evidence / 人工复核.",
+                    "Allowed content: only personnel staffing requirements explicitly supported by retrieval citations.",
+                    "Forbidden in personnel-only answers, even when cited chunks mention them: project manager / project lead / registered constructor / first-class constructor / B-certificate / safety assessment certificate / tender qualification / consortium / similar project performance.",
+                    "Forbidden Chinese terms in personnel-only answers unless the user explicitly asks for those fields: 项目经理 / 项目负责人 / 注册建造师 / 一级建造师 / B证 / 安全考核证 / 投标资质 / 联合体 / 类似工程业绩.",
+                    "If the draft answer contains any personnel_forbidden_answer_terms, discard the draft and output only the personnel_safe_fallback_template.",
+                    "If the draft answer contains any inferred count such as each item equals one person, discard the draft and output only the personnel_safe_fallback_template.",
+                    "If a cited chunk mixes personnel staffing with project manager, constructor, B-certificate, qualification, consortium, or performance content, extract only the personnel staffing part and omit the forbidden fields.",
+                    "Do not convert role names into implicit counts. Never say each project has one, each role equals one person, each category has one person, or at least one per role unless the cited evidence explicitly states that count.",
+                    "If personnel count, profession, title, or qualification is not explicit in citations, answer Missing Evidence / needs manual review for that subfield instead of guessing.",
+                ]
             )
         return lines
 

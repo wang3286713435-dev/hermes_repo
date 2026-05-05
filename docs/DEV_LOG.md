@@ -40,3 +40,9 @@
 - [Phase 2.34] Codex C 真实终端复验通过：Q8 compare 未再误报第三文件污染，facts/transcript 边界抽样保持 false。
 - [Phase 2.35c] 修复 alias/session 绑定语义覆盖缺口：`上一轮已锁定的当前文件` 类提示现在进入 current-document bind / retrieval fallback；新增 direct assertion 覆盖跨进程状态恢复与 run_agent pre-resolved scope。
 - [Phase 2.35c] Codex C 真实终端复验通过：`@主标书` bind 后正式 Q1/Q2 稳定 alias_resolved，不再 alias_missing 或 retrieval_suppressed；deep-field recall 仍 partial。
+- [Phase 2.38d] 补 answer-boundary 最小修复：`personnel_scope` context block 明确人员-only 回答不得混入项目经理 / 项目负责人 / 注册建造师 / B证，且不得从角色列表推断“每类1人”；主仓目标测试 `11 passed`。
+- [Phase 2.38d] 第二轮补强 personnel-only final answer guard：即使 citation chunk 混有项目经理 / 建造师 / B证 / 资质 / 联合体 / 业绩，也只能抽取人员部分；禁止“每个项目只能1个 / 每类1人 / 至少各1名”等隐式数量推断；主仓目标测试 `12 passed`。
+- [Phase 2.38d] 第三轮补结构化 answer guard：新增 `personnel_forbidden_answer_terms`、`personnel_count_inference_forbidden=true`、`ignore_non_personnel_content_in_mixed_chunks=true`，并确认 broad qualification context 不出现这些 personnel-only guard lines；主仓目标测试 `12 passed`。
+- [Phase 2.38d] 第四轮补 personnel-only safe fallback 契约：若答案草稿含 forbidden terms 或隐式数量推断，context 要求丢弃草稿并输出 Missing Evidence / 人工复核模板；当前白名单不含 `run_agent.py`，未接入真正 post-answer retry / replacement。
+- [Phase 2.38d] 第五轮接入 runtime post-answer guard：`run_agent.py` 在最终响应返回前调用 `apply_personnel_answer_guard()`，personnel-only 违规答案会替换为 Missing Evidence / 人工复核 fallback；py_compile 通过，目标测试 `65 passed`。
+- [Phase 2.38d] Codex C 真实终端复验通过：Q1/Q2 personnel-only safe fallback 触发且无禁词 / 数量推断，Q3 broad qualification 未被压扁；本轮执行 Phase 2.38d Git baseline。

@@ -135,3 +135,15 @@
 - 主仓库 session scope 回归已用 `.venv/bin/python -m pytest -o addopts='' tests/agent/test_session_document_scope.py -q` 复跑通过：`48 passed`。
 - Codex C 真实终端复验已通过：正式 Q1/Q2 均为 `alias_resolved`，`alias_missing=false`，`retrieval_suppressed=false`。
 - 当前可进入 Phase 2.35c baseline，但 baseline 只能声明 alias/session 修复收口，不能声明 deep-field recall 完全收口。
+
+## Phase 2.38d
+
+- Hermes_memory retrieval intent / metadata 已将人员要求 query 收敛到 `personnel_scope`，但 Codex C 复验显示最终回答仍会把项目经理 / 建造师或推断人数混入人员要求回答。
+- 本轮主仓库只补 context-level answer boundary：`personnel_scope` 时明确不得把项目经理 / 项目负责人 / 注册建造师 / 一级建造师 / B证 / 安全考核证 / 投标资质 / 联合体 / 类似工程业绩作为 personnel-only 答案，且不得从角色列表推断“每个项目只能1个 / 每类1人 / 至少各1名”。
+- 第二轮最小修复已把 guard 强化为 `STRICT PERSONNEL-ONLY FINAL ANSWER GUARD`，并明确 mixed citation chunk 中也只能抽取人员部分。
+- 第三轮最小修复已补结构化 guard lines：`personnel_forbidden_answer_terms`、`personnel_count_inference_forbidden=true`、`ignore_non_personnel_content_in_mixed_chunks=true`，降低模型忽略自然语言 guard 的概率。
+- 第四轮最小修复已补 personnel-only safe fallback 契约：若草稿包含 forbidden terms 或隐式数量推断，应丢弃草稿并只输出 Missing Evidence / 人工复核模板。
+- 第五轮最小修复已接入 runtime post-answer guard：`run_agent.py` 在最终响应持久化 / 返回前调用 `MemoryKernel.apply_personnel_answer_guard()`，违规 personnel-only 输出会被替换为 Missing Evidence / 人工复核 fallback。
+- Codex C 真实终端复验已通过：Q1/Q2 personnel-only safe fallback 触发且无禁词 / 数量推断；Q3 broad qualification 未被压扁。
+- 当前未改 retrieval contract、未改 memory kernel 主架构、未写 DB、未进入 rollout；本轮执行 Phase 2.38d Git baseline。
+- 主仓目标测试已通过：py_compile 通过，`tests/agent/test_structured_citation_context.py tests/agent/test_session_document_scope.py` 为 `65 passed`。
