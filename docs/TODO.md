@@ -136,6 +136,14 @@
 - Codex C 真实终端复验已通过：正式 Q1/Q2 均为 `alias_resolved`，`alias_missing=false`，`retrieval_suppressed=false`。
 - 当前可进入 Phase 2.35c baseline，但 baseline 只能声明 alias/session 修复收口，不能声明 deep-field recall 完全收口。
 
+## Phase 2.36b
+
+- 已完成 deep-field trace display 映射最小修复：HermesMemoryAdapter / MemoryKernel 会将 Hermes_memory `metadata_deep_field_profile`、`deep_field_profile`、`deep_field_section_hints`、`deep_field_query_aliases`、`deep_field_missing_reason`、`deep_field_diagnostics` 从 retrieval trace 提升到主仓顶层 trace。
+- ContextBuilder 已新增 deep-field diagnostics 渲染行，明确 diagnostics 只是 routing / Missing Evidence 诊断，不替代 retrieval evidence。
+- 已补一步 alias bind prompt：`锁定“标题”，并绑定为 @alias` 支持中文弯引号与 `绑定为 / 绑定成`。
+- 目标测试通过：py_compile 通过，`tests/agent/test_session_document_scope.py tests/agent/test_structured_citation_context.py` 为 `59 passed`。
+- 下一步需 Codex B review；若通过，交 Codex C 复验 Step 1 / Q1 / Q2 终端 trace 透出。
+
 ## Phase 2.38d
 
 - Hermes_memory retrieval intent / metadata 已将人员要求 query 收敛到 `personnel_scope`，但 Codex C 复验显示最终回答仍会把项目经理 / 建造师或推断人数混入人员要求回答。
@@ -147,3 +155,11 @@
 - Codex C 真实终端复验已通过：Q1/Q2 personnel-only safe fallback 触发且无禁词 / 数量推断；Q3 broad qualification 未被压扁。
 - 当前未改 retrieval contract、未改 memory kernel 主架构、未写 DB、未进入 rollout；本轮执行 Phase 2.38d Git baseline。
 - 主仓目标测试已通过：py_compile 通过，`tests/agent/test_structured_citation_context.py tests/agent/test_session_document_scope.py` 为 `65 passed`。
+
+## Phase 2.43d
+
+- Day-1 Pilot 暂停点：`@主标书` 绑定阶段出现 `alias_bind_failed`，正式 Q1 变成 `alias_missing=true / retrieval_suppressed=true`；`@硬件清单`、`@C塔方案`、`@会议纪要` 在 Day-1 中稳定。
+- 本轮最小修复已完成：pending current alias bind 在 retrieval 返回多个候选时采用 top document 完成绑定，并记录 `alias_bind_ambiguous_retrieval_document_ids`；title bind 多候选仍保持失败。
+- `finalize_pending_alias_binding()` 现在返回 scoped filters 时保留 `version_id`，保证 resume 后 `@主标书` query 继续按 document_id/version_id 检索。
+- 主仓目标测试通过：`./.venv/bin/python -m py_compile ...` 通过，`./.venv/bin/python -m pytest -o addopts='' tests/agent/test_session_document_scope.py -q` 为 `51 passed`。
+- 下一步需要 Codex B review 与 Codex C Day-1 Q1 alias/session 复验；当前不 baseline、不 tag、不 push。

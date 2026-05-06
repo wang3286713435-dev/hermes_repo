@@ -57,11 +57,11 @@ DocumentTitleResolver = Callable[[list[str], dict[str, Any]], list[ResolvedDocum
 class SessionDocumentScopeStore:
     """In-process active document scope store keyed by Hermes session id."""
 
-    _QUOTED_TITLE_RE = re.compile(r"[《「『\"]([^》」』\"]+)[》」』\"]")
+    _QUOTED_TITLE_RE = re.compile(r"[《「『\"“]([^》」』\"”]+)[》」』\"”]")
     _ALIAS_RE = re.compile(r"@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
-    _ALIAS_BIND_RE = re.compile(r"(?:设为|命名为|取名为|叫做|叫)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
+    _ALIAS_BIND_RE = re.compile(r"(?:设为|命名为|取名为|叫做|叫|绑定为|绑定成)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
     _ALIAS_BIND_TITLE_RE = re.compile(
-        r"(?:把|将)\s*(.+?)\s*(?:设为|命名为|取名为|叫做|叫)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)"
+        r"(?:把|将)\s*(.+?)\s*(?:设为|命名为|取名为|叫做|叫|绑定为|绑定成)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)"
     )
     _SWITCH_TITLE_RE = re.compile(
         r"(?:围绕|切到|切换到|切回|回到)\s*(.+?)(?:文件|文档|资料)?(?:回答|继续|$|[，。！？\n])"
@@ -682,8 +682,16 @@ class SessionDocumentScopeStore:
             if document:
                 resolved_documents.append(document)
         unique_by_id = {document.document_id: document for document in resolved_documents}
+        selected_document: ResolvedDocument | None = None
+        ambiguous_document_ids: list[str] = []
 
-        if len(unique_by_id) != 1:
+        if len(unique_by_id) == 1:
+            selected_document = next(iter(unique_by_id.values()))
+        elif pending_status == "alias_bind_pending_current_retrieval" and resolved_documents:
+            selected_document = resolved_documents[0]
+            ambiguous_document_ids = list(unique_by_id.keys())
+
+        if selected_document is None:
             if pending_status == "alias_bind_pending_title_retrieval":
                 reason = "no_title_retrieval_match" if not unique_by_id else "ambiguous_title_retrieval"
             else:
@@ -706,7 +714,7 @@ class SessionDocumentScopeStore:
                 suppress_retrieval=False,
             )
 
-        document = next(iter(unique_by_id.values()))
+        document = selected_document
         existing = self._get_alias(session_key, alias)
         alias_conflict = bool(existing and existing.document_id != document.document_id)
         binding = FileAliasBinding(
@@ -755,12 +763,15 @@ class SessionDocumentScopeStore:
                 "allowed_document_ids": [document.document_id],
             }
         )
+        if ambiguous_document_ids:
+            trace["alias_bind_ambiguous_retrieval_document_ids"] = ambiguous_document_ids
+            trace["alias_resolution"]["ambiguous_retrieval_document_ids"] = ambiguous_document_ids
         context_scope = dict(trace.get("context_scope") or {})
         context_scope["source"] = "file_alias"
         context_scope["scope_type"] = "document"
         trace["context_scope"] = context_scope
         return DocumentScopeDecision(
-            filters={**decision.filters, "document_id": document.document_id},
+            filters=self._scoped_filters(decision.filters, document.document_id, document.version_id),
             trace=trace,
             allowed_document_ids=[document.document_id],
             cross_document_allowed=False,

@@ -620,6 +620,137 @@ def test_session_file_alias_current_tender_without_active_document_uses_retrieva
     assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
 
 
+def test_session_file_alias_current_tender_uses_top_document_when_retrieval_has_other_candidates(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            document_id = request.filters.get("document_id")
+            if document_id:
+                return RetrievalOutput(
+                    items=[
+                        KernelItem(
+                            chunk_id=f"{document_id}-1",
+                            document_id=document_id,
+                            version_id="v-main",
+                            text="scoped main tender evidence",
+                            source_name="主标书",
+                        )
+                    ],
+                    citations=[
+                        KernelCitation(
+                            document_id=document_id,
+                            version_id="v-main",
+                            chunk_id=f"{document_id}-1",
+                            source_name="主标书",
+                        )
+                    ],
+                    backend="fake",
+                )
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="main-1",
+                        document_id="doc-main",
+                        version_id="v-main",
+                        text="主标书 evidence",
+                        source_name="主标书",
+                    ),
+                    KernelItem(
+                        chunk_id="other-1",
+                        document_id="doc-other",
+                        version_id="v-other",
+                        text="other evidence",
+                        source_name="其他文件",
+                    ),
+                ],
+                citations=[
+                    KernelCitation(
+                        document_id="doc-main",
+                        version_id="v-main",
+                        chunk_id="main-1",
+                        source_name="主标书",
+                    ),
+                    KernelCitation(
+                        document_id="doc-other",
+                        version_id="v-other",
+                        chunk_id="other-1",
+                        source_name="其他文件",
+                    ),
+                ],
+                backend="fake",
+            )
+
+    scope_path = tmp_path / "scope.json"
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(scope_path)
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+
+    result = kernel.start_turn(KernelRequest(query="把当前主标书设为 @主标书", session_id="s1"))
+    resumed_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    resumed_kernel.document_scope = SessionDocumentScopeStore(scope_path)
+    resumed_kernel.retrieval = fake_retrieval
+    resumed = resumed_kernel.start_turn(KernelRequest(query="围绕 @主标书 回答工程名称", session_id="s1"))
+
+    assert result.trace["alias_resolution"]["status"] == "alias_bound"
+    assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-main"
+    assert result.trace["alias_resolution"]["alias_version_id"] == "v-main"
+    assert result.trace["alias_resolution"]["ambiguous_retrieval_document_ids"] == ["doc-main", "doc-other"]
+    assert resumed.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert resumed.trace["alias_missing"] is False
+    assert resumed.trace.get("retrieval_suppressed") is not True
+    assert fake_retrieval.requests[-1].filters["document_id"] == "doc-main"
+    assert fake_retrieval.requests[-1].filters["version_id"] == "v-main"
+
+
+def test_session_file_alias_title_bind_still_rejects_ambiguous_retrieval(tmp_path):
+    class FakeRetrieval:
+        def __init__(self):
+            self.requests = []
+
+        def resolve_document_titles(self, titles, filters):
+            return []
+
+        def retrieve(self, request, route):
+            self.requests.append(request)
+            return RetrievalOutput(
+                items=[
+                    KernelItem(
+                        chunk_id="a-1",
+                        document_id="doc-a",
+                        version_id="v1",
+                        text="A evidence",
+                        source_name="A标书",
+                    ),
+                    KernelItem(
+                        chunk_id="b-1",
+                        document_id="doc-b",
+                        version_id="v2",
+                        text="B evidence",
+                        source_name="B标书",
+                    ),
+                ],
+                backend="fake",
+            )
+
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeRetrieval()
+    kernel.retrieval = fake_retrieval
+
+    result = kernel.start_turn(KernelRequest(query="把《泛化文件》设为 @测试文件", session_id="s1"))
+
+    assert fake_retrieval.requests
+    assert result.trace["alias_resolution"]["status"] == "alias_bind_failed"
+    assert result.trace["alias_resolution"]["bind_failure_reason"] == "ambiguous_title_retrieval"
+
+
 def test_session_file_alias_previous_locked_current_file_fallback_persists_across_store_instances(tmp_path):
     class FakeRetrieval:
         def __init__(self):
@@ -898,6 +1029,23 @@ def test_session_file_alias_rebind_is_diagnostic():
     assert decision.trace["alias_resolution"]["status"] == "alias_bound"
     assert decision.trace["alias_conflict"] is True
     assert decision.trace["resolved_document_id"] == "doc-b"
+
+
+def test_session_file_alias_binds_curly_quoted_locked_title_with_binding_phrase():
+    store = SessionDocumentScopeStore()
+
+    decision = store.resolve(
+        session_id="s1",
+        query="请在企业记忆中锁定“A标书”，并绑定为 @主标书。",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.trace["alias_resolution"]["status"] == "alias_bound"
+    assert decision.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+    assert decision.trace["alias_resolution"]["resolved_title"] == "A标书"
+    assert decision.filters["document_id"] == "doc-a"
+    assert decision.filters["version_id"] == "v1"
 
 
 def test_alias_context_block_reports_missing_without_fake_evidence():
