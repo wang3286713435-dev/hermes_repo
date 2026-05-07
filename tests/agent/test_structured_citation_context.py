@@ -60,6 +60,41 @@ def test_context_builder_renders_excel_structured_citation_with_cell_range():
     assert "document_id=doc-excel" in context
     assert "sheet_name=报价汇总" in context
     assert "cell_range=B2:F8" in context
+    assert "citation_precision=multi_row_range" in context
+    assert "cell_range_fallback_reason" not in context
+
+
+def test_context_builder_renders_excel_single_row_cell_range_without_fallback():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(
+                chunk_id="chunk-xlsx",
+                document_id="doc-excel",
+                version_id="ver-1",
+                text="含税总价见报价汇总。",
+                source_name="硬件清单.xlsx",
+                metadata={
+                    "parser": "xlsx",
+                    "sheet_name": "报价汇总",
+                    "cell_range": "B7:F7",
+                    "row_start": 7,
+                    "row_end": 7,
+                },
+            )
+        ],
+        citations=[],
+        backend="hermes_memory",
+    )
+
+    context = ContextBuilder().build(
+        route=type("Route", (), {"needs_retrieval": True, "route_type": "enterprise_retrieval", "mode": "hybrid"})(),
+        retrieval=retrieval,
+    )
+
+    assert "sheet_name=报价汇总" in context
+    assert "cell_range=B7:F7" in context
+    assert "citation_precision=cell_range" in context
+    assert "row_range_fallback=true" not in context
     assert "cell_range_fallback_reason" not in context
 
 
@@ -112,6 +147,8 @@ def test_context_builder_renders_excel_row_range_fallback_when_cell_range_missin
 
     assert "sheet_name=报价汇总" in context
     assert "row_range=12-18" in context
+    assert "row_range_fallback=true" in context
+    assert "citation_precision=row_range_fallback" in context
     assert "cell_range_fallback_reason=missing_cell_range" in context
 
 

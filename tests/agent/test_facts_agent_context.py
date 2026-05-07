@@ -175,7 +175,11 @@ def test_transcript_evidence_is_not_marked_as_facts_context():
     assert trace["facts_context_used"] is False
     assert trace["facts_context_fact_ids"] == []
     assert trace["facts_as_answer"] is False
+    assert "Meeting transcript diagnostics:" in block
     assert "meeting_transcript_used=true" in block
+    assert "transcript_as_fact=false" in block
+    assert "evidence_required=true" in block
+    assert "meeting_transcript_as_confirmed_fact=false" in block
     assert "Confirmed facts auxiliary context:" not in block
     assert "confirmed_fact:" not in block
 
@@ -299,6 +303,11 @@ def test_alias_bind_retrieval_only_renders_empty_facts_invariant():
     assert "facts_context_used=false" in block
     assert "facts_context_fact_ids=[]" in block
     assert "facts_as_answer=false" in block
+    assert "Meeting transcript diagnostics:" in block
+    assert "meeting_transcript_used=true" in block
+    assert "transcript_as_fact=false" in block
+    assert "evidence_required=true" in block
+    assert "meeting_transcript_as_confirmed_fact=false" in block
     assert "Confirmed facts auxiliary context:" not in block
     assert "confirmed_fact:" not in block
     assert "meeting-chunk-1" not in block.split("facts_context_fact_ids=", 1)[1].split(";", 1)[0]

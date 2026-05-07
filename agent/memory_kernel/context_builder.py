@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .interfaces import KernelCitation, KernelItem, KernelResult, QueryRoute, RetrievalOutput
@@ -10,6 +11,7 @@ class ContextBuilder:
         trace = retrieval.trace or {}
         scope_lines = self._scope_lines(trace)
         facts_diagnostic_lines = self._facts_diagnostic_lines(trace)
+        meeting_diagnostic_lines = self._meeting_diagnostic_lines(trace, retrieval)
         confirmed_facts_lines = self._confirmed_facts_lines(trace)
         if (
             not route.needs_retrieval
@@ -18,6 +20,7 @@ class ContextBuilder:
                 and not retrieval.citations
                 and not scope_lines
                 and not facts_diagnostic_lines
+                and not meeting_diagnostic_lines
                 and not confirmed_facts_lines
             )
         ):
@@ -37,6 +40,11 @@ class ContextBuilder:
         if facts_diagnostic_lines:
             parts.append("Facts context diagnostics:")
             parts.extend(facts_diagnostic_lines)
+            parts.append("")
+
+        if meeting_diagnostic_lines:
+            parts.append("Meeting transcript diagnostics:")
+            parts.extend(meeting_diagnostic_lines)
             parts.append("")
 
         if confirmed_facts_lines:
@@ -125,6 +133,7 @@ class ContextBuilder:
         cell_range = metadata.get("cell_range")
         if cell_range:
             parts.append(f"cell_range={cell_range}")
+            parts.append(f"citation_precision={self._xlsx_citation_precision(str(cell_range))}")
             return "; ".join(parts)
 
         row_start = metadata.get("row_start")
@@ -132,8 +141,29 @@ class ContextBuilder:
         if row_start is not None or row_end is not None:
             row_label = row_start if row_start == row_end or row_end is None else f"{row_start}-{row_end}"
             parts.append(f"row_range={row_label}")
+            parts.append("row_range_fallback=true")
+            parts.append("citation_precision=row_range_fallback")
             parts.append("cell_range_fallback_reason=missing_cell_range")
         return "; ".join(parts)
+
+    def _xlsx_citation_precision(self, cell_range: str) -> str:
+        refs = [part.strip() for part in cell_range.split(":", 1)]
+        if len(refs) == 1:
+            return "cell_range"
+
+        first_row = self._xlsx_row_number(refs[0])
+        last_row = self._xlsx_row_number(refs[1])
+        if first_row is None or last_row is None:
+            return "range_unknown"
+        if first_row != last_row:
+            return "multi_row_range"
+        return "cell_range"
+
+    def _xlsx_row_number(self, ref: str) -> int | None:
+        match = re.search(r"\$?[A-Za-z]+\$?(\d+)", ref)
+        if not match:
+            return None
+        return int(match.group(1))
 
     def _pptx_location(self, metadata: dict[str, Any]) -> str:
         parts: list[str] = []
@@ -312,6 +342,50 @@ class ContextBuilder:
             if trace.get("facts_context_suppressed_reason")
             else []
         )
+
+    def _meeting_diagnostic_lines(self, trace: dict, retrieval: RetrievalOutput) -> list[str]:
+        if not self._has_meeting_transcript_context(trace, retrieval):
+            return []
+        fields = trace.get("meeting_fields_matched", [])
+        source_chunk_ids = trace.get("meeting_source_chunk_ids", [])
+        if not source_chunk_ids:
+            source_chunk_ids = [
+                item.chunk_id
+                for item in retrieval.items
+                if self._is_meeting_transcript_metadata(item.metadata)
+            ]
+        if not fields:
+            fields = self._meeting_fields_from_metadata(retrieval)
+        return [
+            "meeting_transcript_used=true; transcript_as_fact=false; evidence_required=true; meeting_transcript_as_confirmed_fact=false",
+            "meeting transcript is retrieval evidence only, not confirmed facts; never put meeting transcript chunks into facts_context_fact_ids.",
+            f"meeting_fields_matched={fields}; meeting_source_chunk_ids={source_chunk_ids}",
+        ]
+
+    def _has_meeting_transcript_context(self, trace: dict, retrieval: RetrievalOutput) -> bool:
+        if trace.get("meeting_transcript_used"):
+            return True
+        return any(
+            self._is_meeting_transcript_metadata(item.metadata)
+            for item in [*retrieval.items, *retrieval.citations]
+        )
+
+    def _is_meeting_transcript_metadata(self, metadata: dict[str, Any] | None) -> bool:
+        data = metadata or {}
+        return bool(data.get("meeting_transcript") or data.get("content_profile") == "meeting_transcript")
+
+    def _meeting_fields_from_metadata(self, retrieval: RetrievalOutput) -> list[Any]:
+        fields: list[Any] = []
+        for item in [*retrieval.items, *retrieval.citations]:
+            if not self._is_meeting_transcript_metadata(item.metadata):
+                continue
+            metadata = item.metadata or {}
+            value = metadata.get("meeting_fields_matched") or metadata.get("meeting_fields")
+            if isinstance(value, list):
+                fields.extend(value)
+            elif value:
+                fields.append(value)
+        return fields
 
     def _confirmed_facts_lines(self, trace: dict) -> list[str]:
         lines: list[str] = []
