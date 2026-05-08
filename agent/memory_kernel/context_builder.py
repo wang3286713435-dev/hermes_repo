@@ -483,7 +483,7 @@ class ContextBuilder:
         evidence = self._first_file_steward_evidence(retrieval)
         if evidence is None:
             return None
-        source_name = evidence.source_name or evidence.source_uri
+        source_name = self._file_steward_source_name(evidence.metadata, evidence.source_name, evidence.source_uri, evidence.document_id)
         title = self._file_steward_title(evidence.metadata, source_name, evidence.document_id)
         return build_file_answer_metadata(
             document_id=evidence.document_id,
@@ -587,6 +587,20 @@ class ContextBuilder:
         elif helper_type == "file_answer_metadata":
             file_metadata = helper.get("file") or {}
             if isinstance(file_metadata, dict):
+                source_fields_present = all(
+                    bool(file_metadata.get(field))
+                    for field in ("document_id", "version_id", "title", "source_name", "source_type")
+                )
+                lines.extend(
+                    [
+                        "file_answer_metadata_required_fields=document_id,version_id,title,source_name,source_type,citation_count",
+                        f"file_answer_metadata_echo_required=true; file_answer_metadata_source_fields_present={str(source_fields_present).lower()}",
+                        "file_answer_metadata_safety_flags: metadata_as_answer=false; facts_as_answer=false; "
+                        "snapshot_as_answer=false; requires_retrieval_evidence=true",
+                        "file_answer_metadata_instruction=when_user_requests_file_answer_metadata_or_citation_count_echo_document_id_version_id_title_source_name_source_type_citation_count_and_safety_flags; "
+                        "metadata_is_display_only_not_answer_evidence=true",
+                    ]
+                )
                 lines.append(
                     "file_answer_metadata: "
                     f"document_id={file_metadata.get('document_id')}; "
@@ -598,6 +612,25 @@ class ContextBuilder:
                     f"citation_count={file_metadata.get('citation_count')}"
                 )
         return lines
+
+    def _file_steward_source_name(
+        self,
+        metadata: dict[str, Any] | None,
+        source_name: str | None,
+        source_uri: str | None,
+        document_id: str,
+    ) -> str:
+        data = metadata or {}
+        return str(
+            source_name
+            or source_uri
+            or data.get("source_name")
+            or data.get("file_name")
+            or data.get("source_title")
+            or data.get("title")
+            or data.get("document_title")
+            or document_id
+        )
 
     def _format_active_document_line(self, active_document: dict[str, Any]) -> str:
         return (

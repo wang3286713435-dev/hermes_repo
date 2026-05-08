@@ -1165,7 +1165,45 @@ def test_file_steward_file_answer_metadata_context_block_from_evidence():
     assert "source_type=docx" in context
     assert "citation_count=1" in context
     assert "metadata_as_answer=false" in context
+    assert "file_answer_metadata_required_fields=document_id,version_id,title,source_name,source_type,citation_count" in context
+    assert "file_answer_metadata_echo_required=true" in context
+    assert "file_answer_metadata_source_fields_present=true" in context
+    assert "file_answer_metadata_safety_flags: metadata_as_answer=false" in context
+    assert "facts_as_answer=false" in context
+    assert "snapshot_as_answer=false" in context
+    assert "requires_retrieval_evidence=true" in context
+    assert "metadata_is_display_only_not_answer_evidence=true" in context
     assert "Retrieved evidence:" in context
+
+
+def test_file_steward_file_answer_metadata_falls_back_to_metadata_source_name():
+    builder = ContextBuilder()
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(
+                chunk_id="chunk-a",
+                document_id="doc-a",
+                version_id="v1",
+                text="A evidence",
+                metadata={"source_type": "docx", "source_name": "fallback.docx"},
+            )
+        ],
+        citations=[
+            KernelCitation(
+                document_id="doc-a",
+                version_id="v1",
+                chunk_id="chunk-a",
+            )
+        ],
+        backend="fake",
+    )
+
+    context = builder.build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "file_steward.type=file_answer_metadata" in context
+    assert "title=fallback.docx" in context
+    assert "source_name=fallback.docx" in context
+    assert "file_answer_metadata_source_fields_present=true" in context
 
 
 def test_alias_context_block_reports_stale_version_hint():
