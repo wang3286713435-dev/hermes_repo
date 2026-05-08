@@ -3,6 +3,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .file_steward_ux import (
+    ActiveDocumentHint,
+    FileCandidate,
+    build_active_document_continuation_hint,
+    build_alias_failure_helper,
+    build_file_answer_metadata,
+)
 from .interfaces import KernelCitation, KernelItem, KernelResult, QueryRoute, RetrievalOutput
 
 
@@ -13,6 +20,7 @@ class ContextBuilder:
         facts_diagnostic_lines = self._facts_diagnostic_lines(trace)
         meeting_diagnostic_lines = self._meeting_diagnostic_lines(trace, retrieval)
         confirmed_facts_lines = self._confirmed_facts_lines(trace)
+        file_steward_lines = self._file_steward_lines(trace, retrieval)
         if (
             not route.needs_retrieval
             or (
@@ -22,6 +30,7 @@ class ContextBuilder:
                 and not facts_diagnostic_lines
                 and not meeting_diagnostic_lines
                 and not confirmed_facts_lines
+                and not file_steward_lines
             )
         ):
             return ""
@@ -50,6 +59,11 @@ class ContextBuilder:
         if confirmed_facts_lines:
             parts.append("Confirmed facts auxiliary context:")
             parts.extend(confirmed_facts_lines)
+            parts.append("")
+
+        if file_steward_lines:
+            parts.append("File steward diagnostics:")
+            parts.extend(file_steward_lines)
             parts.append("")
 
         if retrieval.items:
@@ -416,3 +430,187 @@ class ContextBuilder:
                 if fact.get("stale_source_version"):
                     lines.append("confirmed_fact_warning: source version is stale; show the warning and prefer latest retrieval evidence when available.")
         return lines
+
+    def _file_steward_lines(self, trace: dict, retrieval: RetrievalOutput) -> list[str]:
+        helpers: list[dict[str, Any]] = []
+
+        alias_helper = self._file_steward_alias_helper(trace)
+        if alias_helper:
+            helpers.append(alias_helper)
+
+        active_helper = self._file_steward_active_document_helper(trace)
+        if active_helper:
+            helpers.append(active_helper)
+
+        metadata_helper = self._file_steward_answer_metadata_helper(retrieval)
+        if metadata_helper:
+            helpers.append(metadata_helper)
+
+        lines: list[str] = []
+        for helper in helpers:
+            lines.extend(self._format_file_steward_helper(helper))
+        return lines
+
+    def _file_steward_alias_helper(self, trace: dict) -> dict[str, Any] | None:
+        alias_resolution = trace.get("alias_resolution") or {}
+        if not isinstance(alias_resolution, dict):
+            return None
+
+        alias = alias_resolution.get("alias") or trace.get("alias")
+        alias_missing = bool(alias_resolution.get("alias_missing") or trace.get("alias_missing"))
+        retrieval_suppressed = bool(
+            trace.get("scope_retrieval_suppressed")
+            or trace.get("suppress_retrieval")
+            or trace.get("retrieval_suppressed")
+        )
+        if not alias or not (alias_missing or retrieval_suppressed):
+            return None
+
+        return build_alias_failure_helper(
+            alias=str(alias),
+            candidates=self._file_steward_candidates(trace),
+            active_document=self._file_steward_active_document_hint(trace),
+            failed_reason=str(alias_resolution.get("status") or trace.get("scope_resolution_status") or "alias_missing"),
+        )
+
+    def _file_steward_active_document_helper(self, trace: dict) -> dict[str, Any] | None:
+        active_document = self._file_steward_active_document_hint(trace)
+        if active_document is None:
+            return None
+        return build_active_document_continuation_hint(active_document)
+
+    def _file_steward_answer_metadata_helper(self, retrieval: RetrievalOutput) -> dict[str, Any] | None:
+        evidence = self._first_file_steward_evidence(retrieval)
+        if evidence is None:
+            return None
+        source_name = evidence.source_name or evidence.source_uri
+        title = self._file_steward_title(evidence.metadata, source_name, evidence.document_id)
+        return build_file_answer_metadata(
+            document_id=evidence.document_id,
+            version_id=evidence.version_id,
+            title=title,
+            source_name=source_name,
+            source_type=self._file_steward_source_type(evidence.metadata),
+            evidence_scope="document",
+            citation_count=len(retrieval.citations),
+        )
+
+    def _file_steward_active_document_hint(self, trace: dict) -> ActiveDocumentHint | None:
+        document_id = trace.get("active_document_id")
+        title = trace.get("active_document_title") or trace.get("active_document_name")
+        if not document_id:
+            return None
+        return ActiveDocumentHint(
+            document_id=str(document_id),
+            version_id=self._optional_str(trace.get("active_document_version_id")),
+            title=str(title or document_id),
+            source_name=self._optional_str(trace.get("active_document_source_name")),
+            source_type=self._optional_str(trace.get("active_document_source_type")),
+            scope_source=self._optional_str(trace.get("document_scope_source") or trace.get("scope_source")),
+        )
+
+    def _file_steward_candidates(self, trace: dict) -> list[FileCandidate]:
+        raw_candidates = trace.get("file_candidates") or trace.get("alias_candidates") or trace.get("candidate_documents") or []
+        candidates: list[FileCandidate] = []
+        if not isinstance(raw_candidates, list):
+            return candidates
+        for candidate in raw_candidates:
+            if not isinstance(candidate, dict) or not candidate.get("document_id"):
+                continue
+            candidates.append(
+                FileCandidate(
+                    document_id=str(candidate.get("document_id")),
+                    version_id=self._optional_str(candidate.get("version_id")),
+                    title=str(candidate.get("title") or candidate.get("source_name") or candidate.get("document_id")),
+                    source_name=self._optional_str(candidate.get("source_name")),
+                    source_type=self._optional_str(candidate.get("source_type")),
+                    match_reason=self._optional_str(candidate.get("match_reason") or candidate.get("reason")),
+                )
+            )
+        return candidates
+
+    def _first_file_steward_evidence(self, retrieval: RetrievalOutput) -> KernelItem | KernelCitation | None:
+        if retrieval.items:
+            return retrieval.items[0]
+        if retrieval.citations:
+            return retrieval.citations[0]
+        return None
+
+    def _file_steward_title(self, metadata: dict[str, Any] | None, source_name: str | None, document_id: str) -> str:
+        data = metadata or {}
+        return str(
+            data.get("title")
+            or data.get("document_title")
+            or data.get("source_title")
+            or source_name
+            or document_id
+        )
+
+    def _file_steward_source_type(self, metadata: dict[str, Any] | None) -> str | None:
+        data = metadata or {}
+        value = data.get("source_type") or data.get("document_type") or data.get("parser")
+        return self._optional_str(value)
+
+    def _format_file_steward_helper(self, helper: dict[str, Any]) -> list[str]:
+        lines = [
+            f"file_steward.type={helper.get('type')}; status={helper.get('status')}",
+            "facts_as_answer=false; transcript_as_fact=false; snapshot_as_answer=false; "
+            "metadata_as_answer=false; requires_retrieval_evidence=true",
+        ]
+        helper_type = helper.get("type")
+        if helper_type == "alias_failure_helper":
+            lines.append(
+                f"alias={helper.get('alias')}; failed_reason={helper.get('failed_reason')}; "
+                f"candidate_count={helper.get('candidate_count')}; auto_bind_allowed={str(helper.get('auto_bind_allowed')).lower()}; "
+                f"retrieval_evidence_document_ids={helper.get('retrieval_evidence_document_ids', [])}; "
+                f"next_action={helper.get('next_action')}"
+            )
+            for candidate in helper.get("candidates") or []:
+                if not isinstance(candidate, dict):
+                    continue
+                lines.append(
+                    "file_candidate: "
+                    f"document_id={candidate.get('document_id')}; version_id={candidate.get('version_id')}; "
+                    f"title={candidate.get('title')}; source_name={candidate.get('source_name')}; "
+                    f"source_type={candidate.get('source_type')}; match_reason={candidate.get('match_reason')}"
+                )
+            active_document = helper.get("active_document")
+            if isinstance(active_document, dict) and active_document:
+                lines.append(self._format_active_document_line(active_document))
+        elif helper_type == "active_document_continuation_hint":
+            lines.append(
+                f"can_continue={str(helper.get('can_continue')).lower()}; next_action={helper.get('next_action')}"
+            )
+            active_document = helper.get("active_document")
+            if isinstance(active_document, dict) and active_document:
+                lines.append(self._format_active_document_line(active_document))
+        elif helper_type == "file_answer_metadata":
+            file_metadata = helper.get("file") or {}
+            if isinstance(file_metadata, dict):
+                lines.append(
+                    "file_answer_metadata: "
+                    f"document_id={file_metadata.get('document_id')}; "
+                    f"version_id={file_metadata.get('version_id')}; "
+                    f"title={file_metadata.get('title')}; "
+                    f"source_name={file_metadata.get('source_name')}; "
+                    f"source_type={file_metadata.get('source_type')}; "
+                    f"evidence_scope={file_metadata.get('evidence_scope')}; "
+                    f"citation_count={file_metadata.get('citation_count')}"
+                )
+        return lines
+
+    def _format_active_document_line(self, active_document: dict[str, Any]) -> str:
+        return (
+            "active_document: "
+            f"document_id={active_document.get('document_id')}; "
+            f"version_id={active_document.get('version_id')}; "
+            f"title={active_document.get('title')}; "
+            f"source_name={active_document.get('source_name')}; "
+            f"source_type={active_document.get('source_type')}; "
+            f"scope_source={active_document.get('scope_source')}"
+        )
+
+    def _optional_str(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)

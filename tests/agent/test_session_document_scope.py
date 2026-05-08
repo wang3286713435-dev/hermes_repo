@@ -1073,6 +1073,101 @@ def test_alias_context_block_reports_missing_without_fake_evidence():
     assert "do not answer from history memory as document evidence" in context
 
 
+def test_file_steward_alias_missing_context_block_gives_next_step_without_evidence():
+    builder = ContextBuilder()
+    retrieval = RetrievalOutput(
+        backend="document_scope_suppressed",
+        trace={
+            "alias_resolution": {
+                "status": "alias_missing",
+                "alias": "主标书",
+                "resolved_document_id": None,
+                "resolved_title": None,
+                "alias_scope": "session",
+                "alias_missing": True,
+            },
+            "scope_retrieval_suppressed": True,
+        },
+    )
+
+    context = builder.build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "File steward diagnostics:" in context
+    assert "file_steward.type=alias_failure_helper" in context
+    assert "alias=主标书" in context
+    assert "auto_bind_allowed=false" in context
+    assert "retrieval_evidence_document_ids=[]" in context
+    assert "next_action=ask_user_for_exact_title_or_import_file" in context
+    assert "metadata_as_answer=false" in context
+    assert "requires_retrieval_evidence=true" in context
+    assert "Retrieved evidence:" not in context
+
+
+def test_file_steward_active_document_continuation_context_block():
+    builder = ContextBuilder()
+    retrieval = RetrievalOutput(
+        backend="fake",
+        trace={
+            "active_document_id": "doc-a",
+            "active_document_version_id": "v1",
+            "active_document_title": "A标书",
+            "active_document_source_name": "a.docx",
+            "active_document_source_type": "docx",
+            "document_scope_source": "active_document",
+            "scope_resolution_status": "active_document_applied",
+        },
+    )
+
+    context = builder.build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "File steward diagnostics:" in context
+    assert "file_steward.type=active_document_continuation_hint" in context
+    assert "can_continue=true" in context
+    assert "document_id=doc-a" in context
+    assert "version_id=v1" in context
+    assert "title=A标书" in context
+    assert "metadata_as_answer=false" in context
+    assert "requires_retrieval_evidence=true" in context
+
+
+def test_file_steward_file_answer_metadata_context_block_from_evidence():
+    builder = ContextBuilder()
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(
+                chunk_id="chunk-a",
+                document_id="doc-a",
+                version_id="v1",
+                text="A evidence",
+                source_name="a.docx",
+                metadata={"source_type": "docx", "title": "A标书"},
+            )
+        ],
+        citations=[
+            KernelCitation(
+                document_id="doc-a",
+                version_id="v1",
+                chunk_id="chunk-a",
+                source_name="a.docx",
+            )
+        ],
+        backend="fake",
+    )
+
+    context = builder.build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "File steward diagnostics:" in context
+    assert "file_steward.type=file_answer_metadata" in context
+    assert "file_answer_metadata: document_id=doc-a" in context
+    assert "version_id=v1" in context
+    assert "title=A标书" in context
+    assert "source_name=a.docx" in context
+    assert "source_type=docx" in context
+    assert "citation_count=1" in context
+    assert "metadata_as_answer=false" in context
+    assert "Retrieved evidence:" in context
+
+
 def test_alias_context_block_reports_stale_version_hint():
     builder = ContextBuilder()
     retrieval = RetrievalOutput(
