@@ -101,6 +101,14 @@ def test_directory_bulk_nas_bim_intents_fail_closed():
     assert bim_request.failed_reason == "bulk_import_not_supported"
 
 
+def test_unsupported_extension_fails_closed():
+    request = parse_natural_file_import("导入 /tmp/demo.exe 到企业记忆")
+
+    assert request.detected is True
+    assert request.failed_reason == "unsupported_extension"
+    assert request.trace["import_failed_reason"] == "unsupported_extension"
+
+
 def test_diagnostics_fields_are_stable_and_safe():
     request = parse_natural_file_import("上传 /tmp/demo.xlsx 到企业记忆，绑定为 @硬件清单")
     diagnostics = build_natural_file_import_diagnostics(request)
