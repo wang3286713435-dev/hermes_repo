@@ -1,5 +1,6 @@
 # DEV_LOG
 
+- [Phase 2.56a] 完成 Natural Import Real Adapter Skeleton：新增 feature-flagged upload adapter，默认 disabled；preflight 默认 `real_upload_enabled=false`，有效导入请求 fail-closed 为 `real_upload_disabled` 且不调用 adapter。fake adapter success 需显式启用，可 seed alias；目标测试 `25 passed`。本轮未调用真实 Hermes_memory upload API、未上传文件、未改 retrieval contract。
 - [Phase 2.10] 新增会话文件作用域最小实现，支持同一 Hermes 会话内文件切换与 evidence 防污染。
 - [Phase 2.10] 修复 A/B 对比只召回单文件的问题，compare mode 改为双 scoped retrieval 合并。
 - [Phase 2.10] 真实终端 A->B->A->A/B 对比验收通过，同会话切换不再依赖新开会话。

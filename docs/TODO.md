@@ -1,5 +1,13 @@
 # TODO
 
+## Phase 2.56a
+
+- 已完成 natural import real adapter skeleton。
+- 新增 feature-flagged upload adapter，默认 `enabled=false`。
+- `run_natural_file_import_preflight()` 默认 `real_upload_enabled=false`；有效导入请求未显式启用时返回 `real_upload_disabled`，不会调用 adapter。
+- fake adapter success 需显式 `real_upload_enabled=True`，可返回 `document_id/version_id` 并 seed session alias。
+- import diagnostics 仍不是 retrieval evidence；本轮未调用真实 Hermes_memory upload API、未上传文件、未运行 API / CLI smoke。
+
 ## Phase 2.10
 
 - 已完成同一 Hermes 会话内 active document 最小实现。

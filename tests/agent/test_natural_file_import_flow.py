@@ -63,6 +63,21 @@ def test_fail_closed_import_returns_diagnostics_without_upload():
     assert result.diagnostics["retrieval_evidence_document_ids"] == []
 
 
+def test_valid_import_with_adapter_fails_closed_when_real_upload_disabled():
+    adapter = FakeUploadAdapter(_success_result())
+
+    result = run_natural_file_import_preflight("导入 /tmp/demo.pdf 到企业记忆", upload_adapter=adapter)
+
+    assert result.intercepted is True
+    assert result.normal_flow_allowed is False
+    assert adapter.calls == 0
+    assert result.diagnostics["real_upload_enabled"] is False
+    assert result.diagnostics["upload_adapter_status"] == "disabled"
+    assert result.diagnostics["ingestion_status"] == "not_executed"
+    assert result.diagnostics["import_failed_reason"] == "real_upload_disabled"
+    assert result.diagnostics["retrieval_evidence_document_ids"] == []
+
+
 def test_missing_path_directory_and_bulk_fail_closed_without_retrieval_evidence():
     missing = run_natural_file_import_preflight("请导入企业记忆")
     directory = run_natural_file_import_preflight("导入 /tmp/data/ 目录到企业记忆")
@@ -79,14 +94,18 @@ def test_missing_path_directory_and_bulk_fail_closed_without_retrieval_evidence(
 def test_mocked_upload_success_returns_document_and_version():
     adapter = FakeUploadAdapter(_success_result())
 
-    result = run_natural_file_import_preflight("导入 /tmp/demo.pdf 到企业记忆", upload_adapter=adapter)
+    result = run_natural_file_import_preflight(
+        "导入 /tmp/demo.pdf 到企业记忆",
+        upload_adapter=adapter,
+        real_upload_enabled=True,
+    )
 
     assert result.intercepted is True
     assert result.normal_flow_allowed is False
     assert adapter.calls == 1
     assert adapter.last_request is not None
     assert adapter.last_request.source_path == "/tmp/demo.pdf"
-    assert result.diagnostics["ingestion_status"] == "mocked_upload_succeeded"
+    assert result.diagnostics["ingestion_status"] == "upload_succeeded"
     assert result.diagnostics["document_id"] == "doc-1"
     assert result.diagnostics["version_id"] == "ver-1"
     assert result.diagnostics["chunk_count"] == 3
@@ -99,6 +118,7 @@ def test_alias_requested_and_mocked_upload_success_seeds_session_alias():
     result = run_natural_file_import_preflight(
         "上传 /tmp/demo.pdf 到企业记忆，绑定为 @测试文件",
         upload_adapter=adapter,
+        real_upload_enabled=True,
     )
 
     alias_resolution = result.diagnostics["alias_resolution"]
@@ -122,6 +142,7 @@ def test_alias_requested_and_upload_failed_does_not_bind_alias():
     result = run_natural_file_import_preflight(
         "上传 /tmp/demo.pdf 到企业记忆，绑定为 @测试文件",
         upload_adapter=adapter,
+        real_upload_enabled=True,
     )
 
     assert result.diagnostics["ingestion_status"] == "failed"
@@ -136,10 +157,12 @@ def test_missing_document_id_or_version_id_fails_closed():
     missing_doc = run_natural_file_import_preflight(
         "导入 /tmp/demo.pdf 到企业记忆",
         upload_adapter=FakeUploadAdapter(NaturalFileUploadResult(success=True, version_id="ver-1")),
+        real_upload_enabled=True,
     )
     missing_version = run_natural_file_import_preflight(
         "导入 /tmp/demo.pdf 到企业记忆",
         upload_adapter=FakeUploadAdapter(NaturalFileUploadResult(success=True, document_id="doc-1")),
+        real_upload_enabled=True,
     )
 
     assert missing_doc.diagnostics["ingestion_status"] == "failed"
@@ -152,6 +175,7 @@ def test_import_diagnostics_are_not_retrieval_evidence():
     result: NaturalFileImportFlowResult = run_natural_file_import_preflight(
         "导入 /tmp/demo.pdf 到企业记忆",
         upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
     )
 
     assert result.retrieval_evidence_document_ids == []
@@ -165,6 +189,7 @@ def test_safe_flags_remain_false_for_all_flow_modes():
     success = run_natural_file_import_preflight(
         "导入 /tmp/demo.pdf 到企业记忆",
         upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
     )
 
     for result in (no_intent, fail_closed, success):

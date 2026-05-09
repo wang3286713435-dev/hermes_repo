@@ -1,31 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 from agent.memory_kernel.natural_file_import import (
     NaturalFileImportRequest,
     build_natural_file_import_diagnostics,
     parse_natural_file_import,
 )
-
-
-@dataclass
-class NaturalFileUploadResult:
-    success: bool
-    document_id: str | None = None
-    version_id: str | None = None
-    chunk_count: int | None = None
-    indexed_count: int | None = None
-    message: str | None = None
-    error_type: str | None = None
-    error_message: str | None = None
-    failed_reason: str | None = None
-
-
-class NaturalFileUploadAdapter(Protocol):
-    def upload(self, request: NaturalFileImportRequest) -> NaturalFileUploadResult:
-        ...
+from agent.memory_kernel.natural_file_upload_adapter import (
+    NaturalFileUploadAdapter,
+    NaturalFileUploadResult,
+)
 
 
 @dataclass
@@ -41,8 +27,9 @@ def run_natural_file_import_preflight(
     text: str,
     *,
     upload_adapter: NaturalFileUploadAdapter | None = None,
+    real_upload_enabled: bool = False,
 ) -> NaturalFileImportFlowResult:
-    """Run mocked natural import preflight without calling real upload APIs."""
+    """Run natural import preflight with real upload fail-closed by default."""
 
     request = parse_natural_file_import(text)
     diagnostics = _base_flow_diagnostics(request)
@@ -78,8 +65,21 @@ def run_natural_file_import_preflight(
             diagnostics=diagnostics,
         )
 
+    diagnostics["real_upload_enabled"] = real_upload_enabled
+    if not real_upload_enabled:
+        diagnostics["ingestion_status"] = "not_executed"
+        diagnostics["upload_adapter_status"] = "disabled"
+        diagnostics["import_failed_reason"] = "real_upload_disabled"
+        diagnostics["alias_resolution"] = _alias_not_bound(request, "real_upload_disabled")
+        return NaturalFileImportFlowResult(
+            intercepted=True,
+            normal_flow_allowed=False,
+            request=request,
+            diagnostics=diagnostics,
+        )
+
     upload_result = upload_adapter.upload(request)
-    diagnostics["upload_adapter_status"] = "mocked_executed"
+    diagnostics["upload_adapter_status"] = "executed"
     diagnostics["upload_message"] = upload_result.message
 
     if not upload_result.success:
@@ -112,7 +112,7 @@ def run_natural_file_import_preflight(
 
     diagnostics.update(
         {
-            "ingestion_status": "mocked_upload_succeeded",
+            "ingestion_status": "upload_succeeded",
             "document_id": upload_result.document_id,
             "version_id": upload_result.version_id,
             "chunk_count": upload_result.chunk_count,
@@ -141,6 +141,7 @@ def _base_flow_diagnostics(request: NaturalFileImportRequest) -> dict[str, Any]:
             "indexed_count": None,
             "retrieval_evidence_document_ids": [],
             "import_diagnostics_as_retrieval_evidence": False,
+            "real_upload_enabled": False,
             "dry_run": True,
             "facts_as_answer": False,
             "snapshot_as_answer": False,
