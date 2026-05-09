@@ -83,6 +83,8 @@ from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.memory_kernel import MemoryKernel, MemoryKernelConfig
 from agent.memory_kernel.interfaces import KernelRequest
 from agent.memory_kernel.merge_policy import merge_request_contexts
+from agent.memory_kernel.natural_file_import_runtime import maybe_handle_natural_file_import
+from agent.memory_kernel.natural_file_upload_adapter import FeatureFlaggedHermesMemoryUploadAdapter
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -8675,6 +8677,38 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+
+        _natural_import_upload_enabled = env_var_enabled("HERMES_NATURAL_IMPORT_REAL_UPLOAD_ENABLED", default=False)
+        _natural_import_adapter = FeatureFlaggedHermesMemoryUploadAdapter(
+            client=None,
+            enabled=_natural_import_upload_enabled,
+        )
+        _natural_import_response = maybe_handle_natural_file_import(
+            original_user_message,
+            upload_adapter=_natural_import_adapter,
+            real_upload_enabled=_natural_import_upload_enabled,
+        )
+        if _natural_import_response is not None:
+            user_msg = {"role": "user", "content": user_message}
+            assistant_msg = {"role": "assistant", "content": _natural_import_response.final_response}
+            messages.extend([user_msg, assistant_msg])
+            self._persist_session(messages, conversation_history)
+            return {
+                "final_response": _natural_import_response.final_response,
+                "last_reasoning": None,
+                "messages": messages,
+                "api_calls": 0,
+                "completed": True,
+                "partial": False,
+                "interrupted": False,
+                "response_previewed": False,
+                "model": self.model,
+                "provider": self.provider,
+                "base_url": self.base_url,
+                "memory_kernel": {
+                    "natural_file_import": _natural_import_response.diagnostics,
+                },
+            }
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on

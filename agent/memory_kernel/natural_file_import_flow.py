@@ -140,12 +140,16 @@ def _base_flow_diagnostics(request: NaturalFileImportRequest) -> dict[str, Any]:
             "chunk_count": None,
             "indexed_count": None,
             "retrieval_evidence_document_ids": [],
+            "retrieval_evidence_version_ids": [],
             "import_diagnostics_as_retrieval_evidence": False,
             "real_upload_enabled": False,
             "dry_run": True,
+            "metadata_as_answer": False,
             "facts_as_answer": False,
             "snapshot_as_answer": False,
             "transcript_as_fact": False,
+            "requires_retrieval_evidence": True,
+            "third_document_contamination": False,
         }
     )
     return diagnostics

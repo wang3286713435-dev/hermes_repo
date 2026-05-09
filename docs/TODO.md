@@ -1,5 +1,13 @@
 # TODO
 
+## Phase 2.56d
+
+- 已完成 natural import runtime wiring 最小实现。
+- `run_agent.py` 现在会在普通 memory kernel retrieval / LLM answer 前调用 natural import runtime hook。
+- 非导入 prompt 不被拦截；明确导入 prompt 默认 `real_upload_enabled=false`，fail-closed 返回 diagnostics，不进入普通 retrieval 乱答。
+- fake adapter success / failure / missing id 路径已覆盖；diagnostics 不作为 retrieval evidence，safety flags 保持 false / required。
+- 本轮未调用真实 Hermes_memory upload API、未上传真实文件、未写 DB / OpenSearch / Qdrant。
+
 ## Phase 2.56a
 
 - 已完成 natural import real adapter skeleton。
