@@ -83,8 +83,10 @@ from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.memory_kernel import MemoryKernel, MemoryKernelConfig
 from agent.memory_kernel.interfaces import KernelRequest
 from agent.memory_kernel.merge_policy import merge_request_contexts
+from agent.memory_kernel.hermes_memory_upload_client import HermesMemoryUploadClient
 from agent.memory_kernel.natural_file_import_runtime import maybe_handle_natural_file_import
 from agent.memory_kernel.natural_file_upload_adapter import FeatureFlaggedHermesMemoryUploadAdapter
+from agent.memory_kernel.session_document_scope import DocumentScopeDecision, ResolvedDocument
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -2897,6 +2899,63 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+
+    def _persist_natural_import_alias(self, diagnostics: Dict[str, Any]) -> None:
+        """Seed session alias state after a successful natural file import."""
+
+        alias_resolution = diagnostics.get("alias_resolution")
+        if not isinstance(alias_resolution, dict):
+            diagnostics["alias_persisted"] = False
+            diagnostics["alias_persist_failed_reason"] = "missing_alias_resolution"
+            return
+        if alias_resolution.get("status") != "alias_seeded":
+            diagnostics["alias_persisted"] = False
+            return
+        if not self._memory_kernel:
+            diagnostics["alias_persisted"] = False
+            diagnostics["alias_persist_failed_reason"] = "memory_kernel_unavailable"
+            return
+        alias = alias_resolution.get("alias")
+        document_id = alias_resolution.get("resolved_document_id") or diagnostics.get("document_id")
+        version_id = alias_resolution.get("resolved_version_id") or diagnostics.get("version_id")
+        if not alias or not document_id:
+            diagnostics["alias_persisted"] = False
+            diagnostics["alias_persist_failed_reason"] = "missing_alias_or_document_id"
+            return
+        source_path = diagnostics.get("import_source_path")
+        title = (
+            diagnostics.get("import_title")
+            or (Path(str(source_path)).name if source_path else None)
+            or str(document_id)
+        )
+        decision = DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": alias,
+            },
+        )
+        updated_decision = self._memory_kernel.document_scope.finalize_pending_alias_binding(
+            session_id=self.session_id or "",
+            decision=decision,
+            documents=[
+                ResolvedDocument(
+                    document_id=str(document_id),
+                    title=str(title),
+                    version_id=str(version_id) if version_id else None,
+                    source_name=Path(str(source_path)).name if source_path else str(title),
+                )
+            ],
+        )
+        diagnostics["alias_persisted"] = (
+            updated_decision.trace.get("scope_resolution_status") == "alias_bound"
+        )
+        diagnostics["alias_persist_trace"] = {
+            "scope_resolution_status": updated_decision.trace.get("scope_resolution_status"),
+            "alias": updated_decision.trace.get("alias"),
+            "active_document_id": updated_decision.trace.get("active_document_id"),
+            "active_document_version_id": updated_decision.trace.get("active_document_version_id"),
+        }
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
@@ -8679,8 +8738,16 @@ class AIAgent:
         original_user_message = persist_user_message if persist_user_message is not None else user_message
 
         _natural_import_upload_enabled = env_var_enabled("HERMES_NATURAL_IMPORT_REAL_UPLOAD_ENABLED", default=False)
+        _natural_import_upload_client = (
+            HermesMemoryUploadClient(
+                base_url=os.environ.get("HERMES_MEMORY_API_BASE_URL", "http://127.0.0.1:8000"),
+                timeout=int(os.environ.get("HERMES_NATURAL_IMPORT_UPLOAD_TIMEOUT", "120") or "120"),
+            )
+            if _natural_import_upload_enabled
+            else None
+        )
         _natural_import_adapter = FeatureFlaggedHermesMemoryUploadAdapter(
-            client=None,
+            client=_natural_import_upload_client,
             enabled=_natural_import_upload_enabled,
         )
         _natural_import_response = maybe_handle_natural_file_import(
@@ -8689,6 +8756,7 @@ class AIAgent:
             real_upload_enabled=_natural_import_upload_enabled,
         )
         if _natural_import_response is not None:
+            self._persist_natural_import_alias(_natural_import_response.diagnostics)
             user_msg = {"role": "user", "content": user_message}
             assistant_msg = {"role": "assistant", "content": _natural_import_response.final_response}
             messages.extend([user_msg, assistant_msg])

@@ -179,3 +179,10 @@
 - `finalize_pending_alias_binding()` 现在返回 scoped filters 时保留 `version_id`，保证 resume 后 `@主标书` query 继续按 document_id/version_id 检索。
 - 主仓目标测试通过：`./.venv/bin/python -m py_compile ...` 通过，`./.venv/bin/python -m pytest -o addopts='' tests/agent/test_session_document_scope.py -q` 为 `51 passed`。
 - 下一步需要 Codex B review 与 Codex C Day-1 Q1 alias/session 复验；当前不 baseline、不 tag、不 push。
+# Phase 2.56e Natural Import Real Upload Client
+
+1. Real Hermes_memory upload client 已接入 `run_agent.py` 的 natural import runtime path。
+2. Feature flag：`HERMES_NATURAL_IMPORT_REAL_UPLOAD_ENABLED=true` 时调用 `/api/v1/documents/upload`。
+3. 用户授权 `.docx` real smoke 成功：`document_id=ee54b72c-b88b-4fad-be54-007240285356`，`version_id=950da5fe-dd7c-4eba-8764-916b556d14ce`。
+4. 同 session alias `@C塔人力测算` retrieval smoke 只返回新导入文档 evidence。
+5. 下一步等待 Codex B review；不得自动 cleanup/delete/repair/backfill/reindex 或 rollout。

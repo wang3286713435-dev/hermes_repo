@@ -50,3 +50,4 @@
 - [Phase 2.38d] 第五轮接入 runtime post-answer guard：`run_agent.py` 在最终响应返回前调用 `apply_personnel_answer_guard()`，personnel-only 违规答案会替换为 Missing Evidence / 人工复核 fallback；py_compile 通过，目标测试 `65 passed`。
 - [Phase 2.38d] Codex C 真实终端复验通过：Q1/Q2 personnel-only safe fallback 触发且无禁词 / 数量推断，Q3 broad qualification 未被压扁；本轮执行 Phase 2.38d Git baseline。
 - [Phase 2.43d] 修复 Day-1 `@主标书` alias/session Pause blocker：current alias bind fallback 遇到多个 retrieval document 时采用 top document 完成绑定并保留 version_id，避免 bind turn 可见目标 document/version 但最终 alias 未持久化；title bind 多候选仍保持 ambiguous failure。主仓目标测试 `51 passed`。
+- [Phase 2.56e] 完成 Natural Import Real Upload Client + Real Smoke：新增真实 Hermes_memory upload client，feature flag 开启时通过自然语言导入 path 调用 `/api/v1/documents/upload`；成功导入用户授权 `.docx` 并持久化 alias `@C塔人力测算`。目标测试 `34 passed`，同 session retrieval smoke 只命中新导入文档；未改 retrieval contract 或 memory kernel 主架构，未 cleanup/delete/repair/backfill/reindex。
