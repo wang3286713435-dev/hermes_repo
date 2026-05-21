@@ -2915,6 +2915,10 @@ class AIAgent:
     def _persist_natural_import_alias(self, diagnostics: Dict[str, Any]) -> None:
         """Seed session alias state after a successful natural file import."""
 
+        api_session_key_source = (
+            diagnostics.get("api_session_key_source") or self._api_session_key_source()
+        )
+        diagnostics["api_session_key_source"] = api_session_key_source
         alias_resolution = diagnostics.get("alias_resolution")
         if not isinstance(alias_resolution, dict):
             diagnostics["alias_persisted"] = False
@@ -2945,8 +2949,12 @@ class AIAgent:
             trace={
                 "scope_resolution_status": "alias_bind_pending_current_retrieval",
                 "alias": alias,
+                "alias_continuity_source": "natural_import_success",
             },
         )
+        continuity_owner = self._register_alias_continuity_owner()
+        if continuity_owner:
+            decision.trace.update(continuity_owner)
         updated_decision = self._memory_kernel.document_scope.finalize_pending_alias_binding(
             session_id=self.session_id or "",
             decision=decision,
@@ -2979,7 +2987,58 @@ class AIAgent:
             "alias": updated_decision.trace.get("alias"),
             "active_document_id": updated_decision.trace.get("active_document_id"),
             "active_document_version_id": updated_decision.trace.get("active_document_version_id"),
+            "alias_continuity_status": updated_decision.trace.get("alias_continuity_status"),
+            "alias_continuity_source": updated_decision.trace.get("alias_continuity_source"),
+            "alias_continuity_owner_source": updated_decision.trace.get("alias_continuity_owner_source"),
+            "alias_continuity_persistent": updated_decision.trace.get("alias_continuity_persistent"),
+            "api_session_key_source": api_session_key_source,
         }
+        diagnostics["alias_continuity_status"] = (
+            updated_decision.trace.get("alias_continuity_status") or "not_stored"
+        )
+        diagnostics["alias_continuity_source"] = (
+            updated_decision.trace.get("alias_continuity_source") or "natural_import_success"
+        )
+        diagnostics["api_session_key_source"] = (
+            diagnostics.get("api_session_key_source") or api_session_key_source
+        )
+
+    def _api_session_key_source(self) -> str:
+        if getattr(self, "_gateway_session_key", None):
+            return "gateway_session_key"
+        session_id = str(getattr(self, "session_id", "") or "")
+        if session_id.startswith("api-"):
+            return "api_derived_session_id"
+        if session_id:
+            return "runtime_session_id"
+        return "none"
+
+    def _alias_continuity_owner(self) -> tuple[str | None, str, bool]:
+        gateway_session_key = getattr(self, "_gateway_session_key", None)
+        if gateway_session_key:
+            return str(gateway_session_key), "gateway_session_key", True
+        session_id = str(getattr(self, "session_id", "") or "")
+        if session_id and not session_id.startswith("api-"):
+            return session_id, "runtime_session_id", True
+        return None, "process_local_fallback", False
+
+    def _register_alias_continuity_owner(self) -> dict[str, Any]:
+        if not self._memory_kernel or not hasattr(self._memory_kernel, "document_scope"):
+            return {}
+        document_scope = getattr(self._memory_kernel, "document_scope", None)
+        if not hasattr(document_scope, "set_continuity_owner"):
+            return {}
+        owner_value, owner_source, persistent = self._alias_continuity_owner()
+        try:
+            return document_scope.set_continuity_owner(
+                session_id=self.session_id or "",
+                owner_value=owner_value,
+                owner_source=owner_source,
+                persistent=persistent,
+            )
+        except Exception:
+            logger.debug("Failed to register alias continuity owner", exc_info=True)
+            return {}
 
     def _hydrate_natural_import_aliases_from_history(self, conversation_history: List[Dict] = None) -> None:
         """Restore natural-import aliases from prior assistant diagnostics.
@@ -8858,6 +8917,12 @@ class AIAgent:
             real_upload_enabled=_natural_import_upload_enabled,
         )
         if _natural_import_response is not None:
+            _natural_import_response.diagnostics["history_message_count"] = len(
+                conversation_history or []
+            )
+            _natural_import_response.diagnostics["api_session_key_source"] = (
+                self._api_session_key_source()
+            )
             self._persist_natural_import_alias(_natural_import_response.diagnostics)
             final_response = render_natural_file_import_response(
                 _natural_import_response.diagnostics
@@ -9032,6 +9097,7 @@ class AIAgent:
 
         if self._memory_kernel and isinstance(original_user_message, str):
             try:
+                self._register_alias_continuity_owner()
                 _memory_kernel_options = {}
                 if isinstance(self.request_overrides, dict):
                     raw_options = self.request_overrides.get("memory_kernel") or {}

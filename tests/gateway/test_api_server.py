@@ -27,10 +27,135 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    _gateway_session_key_from_headers,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
 )
+
+
+def test_chat_session_id_drifts_when_openwebui_sends_only_latest_user_message():
+    import_turn = _derive_chat_session_id(
+        None,
+        "请导入 /tmp/建筑类数据样表.xlsx 到企业记忆，并绑定为 @建筑类数据样表",
+    )
+    followup_turn = _derive_chat_session_id(
+        None,
+        "围绕 @建筑类数据样表 总结这个文件，必须给出 citation",
+    )
+
+    assert import_turn.startswith("api-")
+    assert followup_turn.startswith("api-")
+    assert import_turn != followup_turn
+
+
+def test_gateway_session_key_prefers_accepted_hermes_session_header():
+    gateway_session_key, source = _gateway_session_key_from_headers(
+        {"X-Hermes-Session-Id": "chat-123"},
+        accepted_session_id="chat-123",
+    )
+
+    assert gateway_session_key == "api_server:x-hermes-session-id:chat-123"
+    assert source == "x-hermes-session-id"
+
+
+def test_gateway_session_key_accepts_whitelisted_openwebui_conversation_header():
+    gateway_session_key, source = _gateway_session_key_from_headers(
+        {"X-OpenWebUI-Conversation-Id": "conv-abc"},
+        accepted_session_id=None,
+    )
+
+    assert gateway_session_key == "api_server:x-openwebui-conversation-id:conv-abc"
+    assert source == "x-openwebui-conversation-id"
+
+
+def test_gateway_session_key_ignores_non_whitelisted_request_headers():
+    gateway_session_key, source = _gateway_session_key_from_headers(
+        {
+            "Authorization": "Bearer secret-token",
+            "X-Request-Id": "request-123",
+        },
+        accepted_session_id=None,
+    )
+
+    assert gateway_session_key is None
+    assert source == "stable_owner_missing"
+
+
+def test_create_agent_passes_gateway_session_key_to_ai_agent(adapter, monkeypatch):
+    captured_kwargs = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "test-key", "base_url": "http://example.test/v1"},
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "test-model")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _config, _platform: set())
+    monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+    adapter._create_agent(
+        session_id="api-drifted-session",
+        gateway_session_key="api_server:x-hermes-session-id:chat-123",
+    )
+
+    assert captured_kwargs["session_id"] == "api-drifted-session"
+    assert captured_kwargs["gateway_session_key"] == "api_server:x-hermes-session-id:chat-123"
+
+
+def test_chat_completions_passes_accepted_session_header_as_stable_owner(auth_adapter):
+    async def _run_test():
+        mock_result = {"final_response": "Continuing!", "messages": [], "api_calls": 1}
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "chat-123", "Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Continue"}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["session_id"] == "chat-123"
+            assert call_kwargs["gateway_session_key"] == "api_server:x-hermes-session-id:chat-123"
+
+    import asyncio
+
+    asyncio.run(_run_test())
+
+
+def test_chat_completions_passes_openwebui_conversation_header_as_stable_owner(adapter):
+    async def _run_test():
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-OpenWebUI-Conversation-Id": "conv-abc"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["session_id"].startswith("api-")
+            assert call_kwargs["gateway_session_key"] == "api_server:x-openwebui-conversation-id:conv-abc"
+
+    import asyncio
+
+    asyncio.run(_run_test())
 
 
 # ---------------------------------------------------------------------------

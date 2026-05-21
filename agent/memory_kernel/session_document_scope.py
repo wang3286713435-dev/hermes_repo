@@ -4,9 +4,10 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field
 from dataclasses import asdict
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 
@@ -40,6 +41,10 @@ class FileAliasBinding:
     alias_scope: str = "session"
     scope_source: str | None = None
     updated_at: str | None = None
+    continuity_owner_key: str | None = None
+    continuity_owner_source: str | None = None
+    continuity_persistent: bool = False
+    expires_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,8 @@ DocumentTitleResolver = Callable[[list[str], dict[str, Any]], list[ResolvedDocum
 class SessionDocumentScopeStore:
     """In-process active document scope store keyed by Hermes session id."""
 
+    _MAX_CONTINUITY_BINDINGS_PER_ALIAS = 5
+    _ALIAS_CONTINUITY_TTL_SECONDS = 6 * 60 * 60
     _QUOTED_TITLE_RE = re.compile(r"[《「『\"“]([^》」』\"”]+)[》」』\"”]")
     _ALIAS_RE = re.compile(r"@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
     _ALIAS_BIND_RE = re.compile(r"(?:设为|命名为|取名为|叫做|叫|绑定为|绑定成)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
@@ -84,10 +91,78 @@ class SessionDocumentScopeStore:
         self._storage_path = Path(storage_path) if storage_path else None
         self._states: dict[str, DocumentScopeState] = {}
         self._aliases: dict[str, dict[str, FileAliasBinding]] = {}
+        self._alias_continuity: dict[str, dict[str, list[FileAliasBinding]]] = {}
+        self._alias_continuity_ephemeral: dict[str, dict[str, list[FileAliasBinding]]] = {}
+        self._continuity_owners: dict[str, tuple[str, str, bool]] = {}
         self._load()
 
     def get(self, session_id: str) -> DocumentScopeState:
         return self._states.get(session_id or "", DocumentScopeState())
+
+    def set_continuity_owner(
+        self,
+        *,
+        session_id: str,
+        owner_value: str | None,
+        owner_source: str | None,
+        persistent: bool = True,
+    ) -> dict[str, Any]:
+        """Register a sanitized owner for natural-import alias continuity.
+
+        The raw owner value is never persisted or returned in trace. If no
+        stable owner is available, continuity remains process-local and is not
+        saved to disk.
+        """
+
+        session_key = session_id or ""
+        source = str(owner_source or "").strip() or "process_local_fallback"
+        raw_owner = str(owner_value or "").strip()
+        if raw_owner:
+            owner_key = self._stable_continuity_owner_key(raw_owner, source)
+            is_persistent = bool(persistent)
+        else:
+            owner_key = self._fallback_continuity_owner_key(session_key)
+            source = "process_local_fallback"
+            is_persistent = False
+        self._continuity_owners[session_key] = (owner_key, source, is_persistent)
+        return {
+            "alias_continuity_owner_source": source,
+            "alias_continuity_persistent": is_persistent,
+            "stable_owner_missing": source == "process_local_fallback" and not is_persistent,
+        }
+
+    def _stable_continuity_owner_key(self, owner_value: str, owner_source: str) -> str:
+        digest = sha256(f"{owner_source}:{owner_value}".encode("utf-8")).hexdigest()[:24]
+        return f"{owner_source}:{digest}"
+
+    def _fallback_continuity_owner_key(self, session_key: str) -> str:
+        digest = sha256(f"process-local:{session_key}".encode("utf-8")).hexdigest()[:24]
+        return f"process_local_fallback:{digest}"
+
+    def _continuity_owner_context(self, session_key: str) -> tuple[str, str, bool]:
+        registered = self._continuity_owners.get(session_key or "")
+        if registered:
+            return registered
+        return self._fallback_continuity_owner_key(session_key or ""), "process_local_fallback", False
+
+    def _continuity_expires_at(self) -> str:
+        return (datetime.now(timezone.utc) + timedelta(seconds=self._ALIAS_CONTINUITY_TTL_SECONDS)).isoformat()
+
+    def _is_continuity_expired(self, binding: FileAliasBinding) -> bool:
+        expires_at = binding.expires_at
+        if not expires_at and binding.updated_at:
+            try:
+                updated = datetime.fromisoformat(binding.updated_at)
+                expires_at = (updated + timedelta(seconds=self._ALIAS_CONTINUITY_TTL_SECONDS)).isoformat()
+            except Exception:
+                expires_at = None
+        if not expires_at:
+            return False
+        try:
+            expires = datetime.fromisoformat(expires_at)
+        except Exception:
+            return True
+        return expires <= datetime.now(timezone.utc)
 
     def resolve(
         self,
@@ -641,6 +716,15 @@ class SessionDocumentScopeStore:
         normalized_alias = self._normalize_alias(alias)
         binding = self._get_alias(session_key, normalized_alias)
         if binding is None:
+            _, owner_source, owner_persistent = self._continuity_owner_context(session_key)
+            continuity_decision = self._resolve_alias_continuity_reference(
+                session_key=session_key,
+                filters=filters,
+                state=state,
+                alias=normalized_alias,
+            )
+            if continuity_decision is not None:
+                return continuity_decision
             return self._decision(
                 filters=filters,
                 state=state,
@@ -655,6 +739,14 @@ class SessionDocumentScopeStore:
                     alias_missing=True,
                 ),
                 suppress_retrieval=True,
+                extra_trace={
+                    "alias_continuity_status": "not_found",
+                    "alias_continuity_source": "bounded_alias_registry",
+                    "alias_continuity_owner_source": owner_source,
+                    "alias_continuity_persistent": owner_persistent,
+                    "api_session_key_source": "document_scope_session_id",
+                    "stable_owner_missing": owner_source == "process_local_fallback" and not owner_persistent,
+                },
             )
 
         new_state = DocumentScopeState(
@@ -682,6 +774,117 @@ class SessionDocumentScopeStore:
                 alias=normalized_alias,
                 binding=binding,
             ),
+        )
+
+    def _resolve_alias_continuity_reference(
+        self,
+        *,
+        session_key: str,
+        filters: dict[str, Any],
+        state: DocumentScopeState,
+        alias: str,
+    ) -> DocumentScopeDecision | None:
+        owner_key, owner_source, owner_persistent = self._continuity_owner_context(session_key)
+        candidates, expired_count = self._continuity_candidates(
+            owner_key=owner_key,
+            owner_persistent=owner_persistent,
+            alias=alias,
+        )
+        if not candidates:
+            if expired_count:
+                return self._decision(
+                    filters=filters,
+                    state=state,
+                    source="file_alias",
+                    status="alias_missing",
+                    changed=False,
+                    allowed_document_ids=[],
+                    cross_document_allowed=False,
+                    alias_trace=self._alias_trace(
+                        status="alias_missing",
+                        alias=alias,
+                        alias_missing=True,
+                    ),
+                    suppress_retrieval=True,
+                    extra_trace={
+                        "alias_continuity_status": "expired",
+                        "alias_continuity_source": "bounded_alias_registry",
+                        "alias_continuity_owner_source": owner_source,
+                        "alias_continuity_persistent": owner_persistent,
+                        "api_session_key_source": "document_scope_session_id",
+                        "stable_owner_missing": owner_source == "process_local_fallback" and not owner_persistent,
+                    },
+                )
+            return None
+
+        unique: dict[tuple[str, str | None], FileAliasBinding] = {}
+        for binding in candidates:
+            unique[(binding.document_id, binding.version_id)] = binding
+
+        if len(unique) != 1:
+            safe_candidates = [self._safe_continuity_candidate(binding) for binding in unique.values()]
+            return self._decision(
+                filters=filters,
+                state=state,
+                source="file_alias_continuity",
+                status="alias_continuity_conflict",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                alias_trace=self._alias_trace(
+                    status="alias_continuity_conflict",
+                    alias=alias,
+                    alias_missing=False,
+                    alias_conflict=True,
+                ),
+                suppress_retrieval=True,
+                extra_trace={
+                    "alias_continuity_status": "conflict",
+                    "alias_continuity_source": "bounded_alias_registry",
+                    "alias_continuity_owner_source": owner_source,
+                    "alias_continuity_persistent": owner_persistent,
+                    "api_session_key_source": "document_scope_session_id",
+                    "stable_owner_missing": owner_source == "process_local_fallback" and not owner_persistent,
+                    "alias_continuity_candidates": safe_candidates,
+                    "file_discovery_requires_clarification": True,
+                },
+            )
+
+        binding = next(iter(unique.values()))
+        self._session_aliases(session_key)[alias] = binding
+        new_state = DocumentScopeState(
+            active_document_id=binding.document_id,
+            active_document_title=binding.title,
+            active_document_version_id=binding.version_id,
+            active_project=state.active_project,
+            active_task=state.active_task,
+            scope_source="file_alias_continuity",
+            updated_at=self._now(),
+        )
+        self._states[session_key] = new_state
+        self._save()
+        scoped_filters = self._scoped_filters(filters, binding.document_id, binding.version_id)
+        return self._decision(
+            filters=scoped_filters,
+            state=new_state,
+            source="file_alias_continuity",
+            status="alias_resolved",
+            changed=state.active_document_id != binding.document_id,
+            allowed_document_ids=[binding.document_id],
+            cross_document_allowed=False,
+            alias_trace=self._alias_trace(
+                status="alias_resolved",
+                alias=alias,
+                binding=binding,
+            ),
+            extra_trace={
+                "alias_continuity_status": "restored",
+                "alias_continuity_source": "bounded_alias_registry",
+                "alias_continuity_owner_source": owner_source,
+                "alias_continuity_persistent": owner_persistent,
+                "api_session_key_source": "document_scope_session_id",
+                "alias_continuity_candidates": [self._safe_continuity_candidate(binding)],
+            },
         )
 
     def _resolve_alias_compare(
@@ -873,6 +1076,16 @@ class SessionDocumentScopeStore:
             updated_at=self._now(),
         )
         self._session_aliases(session_key)[alias] = binding
+        continuity_source = str(decision.trace.get("alias_continuity_source") or "")
+        continuity_stored = False
+        owner_key, owner_source, owner_persistent = self._continuity_owner_context(session_key)
+        if continuity_source:
+            continuity_stored = self._remember_alias_continuity(
+                binding,
+                owner_key=owner_key,
+                owner_source=owner_source,
+                owner_persistent=owner_persistent,
+            )
         state = self.get(session_key)
         new_state = DocumentScopeState(
             active_document_id=document.document_id,
@@ -907,6 +1120,16 @@ class SessionDocumentScopeStore:
         if ambiguous_document_ids:
             trace["alias_bind_ambiguous_retrieval_document_ids"] = ambiguous_document_ids
             trace["alias_resolution"]["ambiguous_retrieval_document_ids"] = ambiguous_document_ids
+        if continuity_source:
+            trace["alias_continuity_status"] = "stored" if continuity_stored else "not_stored"
+            trace["alias_continuity_source"] = continuity_source
+            trace["alias_continuity_owner_source"] = owner_source
+            trace["alias_continuity_persistent"] = owner_persistent
+            trace["api_session_key_source"] = "document_scope_session_id"
+            trace["alias_resolution"]["alias_continuity_status"] = trace["alias_continuity_status"]
+            trace["alias_resolution"]["alias_continuity_source"] = continuity_source
+            trace["alias_resolution"]["alias_continuity_owner_source"] = owner_source
+            trace["alias_resolution"]["alias_continuity_persistent"] = owner_persistent
         context_scope = dict(trace.get("context_scope") or {})
         context_scope["source"] = "file_alias"
         context_scope["scope_type"] = "document"
@@ -918,6 +1141,77 @@ class SessionDocumentScopeStore:
             cross_document_allowed=False,
             suppress_retrieval=False,
         )
+
+    def _remember_alias_continuity(
+        self,
+        binding: FileAliasBinding,
+        *,
+        owner_key: str,
+        owner_source: str,
+        owner_persistent: bool,
+    ) -> bool:
+        alias = self._normalize_alias(binding.alias)
+        if not alias or not binding.document_id:
+            return False
+        continuity_binding = FileAliasBinding(
+            alias=alias,
+            document_id=binding.document_id,
+            title=binding.title,
+            version_id=binding.version_id,
+            source_name=binding.source_name,
+            alias_scope="continuity",
+            scope_source="natural_import_success",
+            updated_at=self._now(),
+            continuity_owner_key=owner_key,
+            continuity_owner_source=owner_source,
+            continuity_persistent=owner_persistent,
+            expires_at=self._continuity_expires_at(),
+        )
+        registry = self._alias_continuity if owner_persistent else self._alias_continuity_ephemeral
+        owner_aliases = registry.setdefault(owner_key, {})
+        existing = [
+            item
+            for item in owner_aliases.setdefault(alias, [])
+            if not (item.document_id == continuity_binding.document_id and item.version_id == continuity_binding.version_id)
+            and not self._is_continuity_expired(item)
+        ]
+        existing.insert(0, continuity_binding)
+        owner_aliases[alias] = existing[: self._MAX_CONTINUITY_BINDINGS_PER_ALIAS]
+        if owner_persistent:
+            self._save()
+        return True
+
+    def _continuity_candidates(
+        self,
+        *,
+        owner_key: str,
+        owner_persistent: bool,
+        alias: str,
+    ) -> tuple[list[FileAliasBinding], int]:
+        registry = self._alias_continuity if owner_persistent else self._alias_continuity_ephemeral
+        normalized_alias = self._normalize_alias(alias)
+        owner_aliases = registry.get(owner_key, {})
+        raw_candidates = list(owner_aliases.get(normalized_alias, []))
+        active = [binding for binding in raw_candidates if not self._is_continuity_expired(binding)]
+        expired_count = len(raw_candidates) - len(active)
+        if expired_count:
+            owner_aliases[normalized_alias] = active
+            if not active:
+                owner_aliases.pop(normalized_alias, None)
+            if owner_persistent:
+                self._save()
+        return active, expired_count
+
+    def _safe_continuity_candidate(self, binding: FileAliasBinding) -> dict[str, Any]:
+        return {
+            "alias": binding.alias,
+            "document_id": binding.document_id,
+            "version_id": binding.version_id,
+            "title": binding.title,
+            "source_name": binding.source_name,
+            "match_reason": "alias_continuity_candidate",
+            "alias_continuity_owner_source": binding.continuity_owner_source,
+        }
 
     def _state_with_context_hints(
         self,
@@ -1008,6 +1302,8 @@ class SessionDocumentScopeStore:
             trace.update(alias_trace)
         if extra_trace:
             trace.update(extra_trace)
+        if trace.get("stable_owner_missing") and isinstance(trace.get("alias_resolution"), dict):
+            trace["alias_resolution"]["stable_owner_missing"] = True
         return DocumentScopeDecision(
             filters=filters,
             trace=trace,
@@ -1085,6 +1381,7 @@ class SessionDocumentScopeStore:
             return
         states = raw.get("states") if isinstance(raw, dict) else {}
         aliases = raw.get("aliases") if isinstance(raw, dict) else {}
+        alias_continuity = raw.get("alias_continuity") if isinstance(raw, dict) else {}
         if isinstance(states, dict):
             for session_id, state in states.items():
                 if isinstance(state, dict):
@@ -1115,19 +1412,83 @@ class SessionDocumentScopeStore:
                         alias_scope=str(binding.get("alias_scope") or "session"),
                         scope_source=str(binding["scope_source"]) if binding.get("scope_source") else None,
                         updated_at=str(binding["updated_at"]) if binding.get("updated_at") else None,
+                        continuity_owner_key=str(binding["continuity_owner_key"])
+                        if binding.get("continuity_owner_key")
+                        else None,
+                        continuity_owner_source=str(binding["continuity_owner_source"])
+                        if binding.get("continuity_owner_source")
+                        else None,
+                        continuity_persistent=bool(binding.get("continuity_persistent", False)),
+                        expires_at=str(binding["expires_at"]) if binding.get("expires_at") else None,
                     )
                 if session_aliases:
                     self._aliases[str(session_id)] = session_aliases
+        if isinstance(alias_continuity, dict):
+            for owner_key, owner_aliases in alias_continuity.items():
+                if not isinstance(owner_aliases, dict):
+                    # Do not restore pre-owner global alias continuity records.
+                    continue
+                safe_owner_key = str(owner_key)
+                loaded_aliases: dict[str, list[FileAliasBinding]] = {}
+                for alias, bindings in owner_aliases.items():
+                    if not isinstance(bindings, list):
+                        continue
+                    normalized_alias = self._normalize_alias(str(alias))
+                    continuity_bindings: list[FileAliasBinding] = []
+                    for binding in bindings[: self._MAX_CONTINUITY_BINDINGS_PER_ALIAS]:
+                        if not isinstance(binding, dict) or not binding.get("document_id"):
+                            continue
+                        loaded = FileAliasBinding(
+                            alias=normalized_alias,
+                            document_id=str(binding["document_id"]),
+                            title=str(binding.get("title") or binding["document_id"]),
+                            version_id=str(binding["version_id"]) if binding.get("version_id") else None,
+                            source_name=str(binding["source_name"]) if binding.get("source_name") else None,
+                            alias_scope="continuity",
+                            scope_source=str(binding.get("scope_source") or "natural_import_success"),
+                            updated_at=str(binding["updated_at"]) if binding.get("updated_at") else None,
+                            continuity_owner_key=str(binding.get("continuity_owner_key") or safe_owner_key),
+                            continuity_owner_source=str(binding.get("continuity_owner_source") or "unknown"),
+                            continuity_persistent=True,
+                            expires_at=str(binding["expires_at"]) if binding.get("expires_at") else None,
+                        )
+                        if not self._is_continuity_expired(loaded):
+                            continuity_bindings.append(loaded)
+                    if continuity_bindings:
+                        loaded_aliases[normalized_alias] = continuity_bindings
+                if loaded_aliases:
+                    self._alias_continuity[safe_owner_key] = loaded_aliases
 
     def _save(self) -> None:
         if not self._storage_path:
             return
+        persistent_continuity = {
+            owner_key: {
+                alias: [
+                    asdict(binding)
+                    for binding in bindings
+                    if binding.continuity_persistent and not self._is_continuity_expired(binding)
+                ]
+                for alias, bindings in owner_aliases.items()
+            }
+            for owner_key, owner_aliases in self._alias_continuity.items()
+        }
+        persistent_continuity = {
+            owner_key: {
+                alias: bindings
+                for alias, bindings in owner_aliases.items()
+                if bindings
+            }
+            for owner_key, owner_aliases in persistent_continuity.items()
+            if any(owner_aliases.values())
+        }
         payload = {
             "states": {session_id: asdict(state) for session_id, state in self._states.items()},
             "aliases": {
                 session_id: {alias: asdict(binding) for alias, binding in bindings.items()}
                 for session_id, bindings in self._aliases.items()
             },
+            "alias_continuity": persistent_continuity,
         }
         try:
             self._storage_path.parent.mkdir(parents=True, exist_ok=True)

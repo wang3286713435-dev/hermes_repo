@@ -520,6 +520,46 @@ def _derive_chat_session_id(
     return f"api-{digest}"
 
 
+_GATEWAY_STABLE_OWNER_HEADERS = (
+    "X-OpenWebUI-Conversation-Id",
+    "X-OpenWebUI-Chat-Id",
+    "X-Conversation-Id",
+)
+_MAX_GATEWAY_OWNER_HEADER_LENGTH = 256
+
+
+def _sanitize_gateway_owner_header_value(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text or len(text) > _MAX_GATEWAY_OWNER_HEADER_LENGTH:
+        return None
+    if re.search(r"[\r\n\x00]", text):
+        return None
+    return text
+
+
+def _gateway_session_key_from_headers(
+    headers: Any,
+    *,
+    accepted_session_id: Optional[str],
+) -> tuple[Optional[str], str]:
+    """Return the stable API conversation owner for alias continuity.
+
+    The raw value is passed only to ``AIAgent`` where the memory scope store
+    hashes it before trace/persistence. Diagnostics expose only the source.
+    """
+
+    accepted = _sanitize_gateway_owner_header_value(accepted_session_id)
+    if accepted:
+        return f"api_server:x-hermes-session-id:{accepted}", "x-hermes-session-id"
+
+    for header_name in _GATEWAY_STABLE_OWNER_HEADERS:
+        value = _sanitize_gateway_owner_header_value(headers.get(header_name) if headers else None)
+        if value:
+            source = header_name.lower()
+            return f"api_server:{source}:{value}", source
+    return None, "stable_owner_missing"
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -667,6 +707,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        gateway_session_key: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -706,6 +747,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
+            gateway_session_key=gateway_session_key,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
@@ -830,6 +872,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        gateway_session_key: Optional[str] = None
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -858,6 +901,10 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
+            gateway_session_key, _ = _gateway_session_key_from_headers(
+                request.headers,
+                accepted_session_id=session_id,
+            )
         else:
             # Derive a stable session ID from the conversation fingerprint so
             # that consecutive messages from the same Open WebUI (or similar)
@@ -869,6 +916,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     first_user = cm.get("content", "")
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
+            gateway_session_key, _ = _gateway_session_key_from_headers(
+                request.headers,
+                accepted_session_id=None,
+            )
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -929,6 +980,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                gateway_session_key=gateway_session_key,
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
@@ -946,6 +998,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                gateway_session_key=gateway_session_key,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2154,6 +2207,7 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        gateway_session_key: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -2177,6 +2231,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
+                gateway_session_key=gateway_session_key,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,

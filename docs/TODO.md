@@ -1,15 +1,25 @@
 # TODO
 
+## Phase 2.112d
+
+- 已完成 alias continuity owner-scope review fix：natural import continuity 不再按 alias 全局恢复，而是按 safe owner key + alias 恢复。
+- Stable owner value 仅哈希化保存；diagnostics 只暴露 `alias_continuity_owner_source` / persistent 标记，不输出 raw owner。
+- 无 stable owner 时仅使用 process-local non-persistent fallback；新 store load 不恢复 unscoped fallback alias。
+- 已补 TTL/stale cleanup、cross-owner denial、conflict fail-closed / suppress retrieval。
+- 验证通过：py_compile；natural import / upload client / session scope regression `105 passed`；gateway latest-user drift targeted test `1 passed`。
+- 待办：Codex B review；通过后再 selective runtime test-candidate baseline，并交测试机 OpenWebUI / 8642 复验。
+
 ## Phase 2.112
 
 - 已完成 natural import upload-success -> session alias / active document / same-session scoped retrieval 最小修复。
 - 成功导入后会把 seeded alias 持久化为 session file alias，并将 diagnostics 更新为 `alias_bound`；后续 `@alias` query 会带 `document_id/version_id` scoped filters。
 - Phase 2.112b 已补真实 OpenWebUI / 8642 pause 对应的 alias blocker：当兼容接口 session key 漂移时，会从上一轮 natural import diagnostics 恢复 session alias；已存在导入 alias 的 title rebind 不再因 title resolver miss 返回 `alias_bind_failed`。
-- `alias_missing=true` / `retrieval_suppressed=true` 的 follow-up 断链已在目标测试中覆盖：同一 conversation history 中的 import response 可恢复 `@alias -> document_id/version_id` scoped retrieval。
+- Phase 2.112c 已补 OpenWebUI 只发送最新 user message 的断链：成功 natural import 会写入 bounded alias-continuity registry，follow-up api session drift 也能恢复 `@alias -> document_id/version_id` scoped retrieval。
+- 冲突 alias-continuity 候选会 fail-closed 并 suppress retrieval；diagnostics 输出 `alias_continuity_status/source`、`api_session_key_source`、`history_message_count`，且不把 import diagnostics 当 retrieval evidence。
 - 未提供 alias 时会生成安全 alias，并在成功响应中提示用户可继续用 `@alias` 查询。
 - 已补 session alias bounded discovery；模糊找文件请求只返回 session alias 候选并 suppress ordinary retrieval，避免误检索旧文件。
-- 主仓 targeted regression：py_compile 通过，natural import / upload client / session scope tests `99 passed`。
-- 待办：Codex B review 后交测试机 Codex 跑真实 OpenWebUI / 8642 natural import -> same-session retrieval / citation 验收；本轮未执行真实 upload。
+- 主仓 targeted regression：py_compile 通过，natural import / upload client / session scope tests `102 passed`，gateway latest-user drift test `1 passed`。
+- 待办：Codex B review 后做 selective test-candidate baseline，再交测试机 Codex 跑真实 OpenWebUI / 8642 natural import -> `@alias` retrieval / citation 验收；本轮未执行真实 upload。
 
 ## Phase 2.56d
 
@@ -197,3 +207,11 @@
 3. 用户授权 `.docx` real smoke 成功：`document_id=ee54b72c-b88b-4fad-be54-007240285356`，`version_id=950da5fe-dd7c-4eba-8764-916b556d14ce`。
 4. 同 session alias `@C塔人力测算` retrieval smoke 只返回新导入文档 evidence。
 5. 下一步等待 Codex B review；不得自动 cleanup/delete/repair/backfill/reindex 或 rollout。
+
+# Phase 2.112e API Server Stable Owner Bridge Fix
+
+1. API server 已从 accepted `X-Hermes-Session-Id` / whitelisted OpenWebUI conversation headers 生成 `gateway_session_key` 并传入 `AIAgent`。
+2. Whitelisted headers：`X-OpenWebUI-Conversation-Id`、`X-OpenWebUI-Chat-Id`、`X-Conversation-Id`。
+3. 无 stable owner 时仍 fail-closed，并在 alias-missing trace 输出 sanitized `stable_owner_missing`；不暴露 raw owner / token / path / secret / content。
+4. 验证通过：py_compile；API server owner bridge targeted tests `7 passed`；natural import / upload client / session scope regression `106 passed`。
+5. 下一步等待 Codex B review；通过后再做 selective runtime baseline 与测试机 OpenWebUI / 8642 验证。

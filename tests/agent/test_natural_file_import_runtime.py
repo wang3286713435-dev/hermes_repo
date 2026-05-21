@@ -99,6 +99,10 @@ def test_render_success_response_uses_persisted_alias_bound_status():
             "resolved_document_id": "doc-runtime",
             "resolved_version_id": "ver-runtime",
         },
+        "alias_continuity_status": "stored",
+        "alias_continuity_source": "natural_import_success",
+        "api_session_key_source": "api_derived_session_id",
+        "history_message_count": 0,
         "retrieval_evidence_document_ids": [],
         "import_diagnostics_as_retrieval_evidence": False,
         "metadata_as_answer": False,
@@ -113,12 +117,17 @@ def test_render_success_response_uses_persisted_alias_bound_status():
 
     assert "别名我设定为：@测试文件" in response
     assert '"status": "alias_bound"' in response
+    assert "alias_continuity_status=stored" in response
+    assert "alias_continuity_source=natural_import_success" in response
+    assert "api_session_key_source=api_derived_session_id" in response
+    assert "history_message_count=0" in response
     assert "retrieval_evidence_document_ids=[]" in response
 
 
-def test_run_agent_persists_natural_import_alias_as_bound_for_same_session(tmp_path):
+def test_run_agent_persists_natural_import_alias_as_bound_and_continuity(tmp_path):
     agent = object.__new__(AIAgent)
-    agent.session_id = "natural-import-session"
+    agent.session_id = "api-natural-import-session"
+    agent._gateway_session_key = "gateway-chat-1"
     agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
     agent._memory_kernel.document_scope._storage_path = tmp_path / "scope.json"
     diagnostics = {
@@ -135,15 +144,22 @@ def test_run_agent_persists_natural_import_alias_as_bound_for_same_session(tmp_p
     }
 
     agent._persist_natural_import_alias(diagnostics)
+    agent.session_id = "api-followup-drift-session"
+    agent._register_alias_continuity_owner()
     decision = agent._memory_kernel.resolve_document_scope(
-        session_id="natural-import-session",
+        session_id="api-followup-drift-session",
         query="围绕 @测试文件 回答，必须给出 citation",
         filters={},
     )
 
     assert diagnostics["alias_persisted"] is True
     assert diagnostics["alias_resolution"]["status"] == "alias_bound"
+    assert diagnostics["alias_continuity_status"] == "stored"
+    assert diagnostics["alias_continuity_source"] == "natural_import_success"
+    assert diagnostics["api_session_key_source"] == "gateway_session_key"
     assert decision.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert decision.trace["alias_continuity_status"] == "restored"
+    assert decision.trace["alias_continuity_owner_source"] == "gateway_session_key"
     assert decision.filters["document_id"] == "doc-runtime"
     assert decision.filters["version_id"] == "ver-runtime"
 
@@ -236,6 +252,45 @@ def test_runtime_response_keeps_import_diagnostics_out_of_evidence_and_sets_safe
     assert "import_diagnostics_as_retrieval_evidence=false" in response.final_response
     assert "facts_as_answer=false" in response.final_response
     assert "requires_retrieval_evidence=true" in response.final_response
+
+
+def test_rendered_import_diagnostics_do_not_expose_raw_paths_or_turn_into_evidence():
+    response = render_natural_file_import_response(
+        {
+            "natural_import_detected": True,
+            "real_upload_enabled": True,
+            "upload_adapter_status": "executed",
+            "ingestion_status": "upload_succeeded",
+            "import_failed_reason": None,
+            "document_id": "doc-runtime",
+            "version_id": "ver-runtime",
+            "chunk_count": 4,
+            "indexed_count": 4,
+            "import_source_path": "/Users/example/private/测试文件.xlsx",
+            "alias_resolution": {
+                "status": "alias_bound",
+                "alias": "测试文件",
+                "resolved_document_id": "doc-runtime",
+                "resolved_version_id": "ver-runtime",
+            },
+            "alias_continuity_status": "stored",
+            "alias_continuity_source": "natural_import_success",
+            "api_session_key_source": "api_derived_session_id",
+            "history_message_count": 0,
+            "retrieval_evidence_document_ids": [],
+            "import_diagnostics_as_retrieval_evidence": False,
+            "metadata_as_answer": False,
+            "facts_as_answer": False,
+            "snapshot_as_answer": False,
+            "transcript_as_fact": False,
+            "requires_retrieval_evidence": True,
+            "third_document_contamination": False,
+        }
+    )
+
+    assert "/Users/example/private" not in response
+    assert "retrieval_evidence_document_ids=[]" in response
+    assert "import_diagnostics_as_retrieval_evidence=false" in response
 
 
 def test_missing_document_or_version_fails_closed():

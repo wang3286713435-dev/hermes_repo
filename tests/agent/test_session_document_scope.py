@@ -6,6 +6,7 @@ from agent.memory_kernel.interfaces import KernelCitation, KernelItem, KernelReq
 from agent.memory_kernel.kernel import MemoryKernel
 from agent.memory_kernel.session_document_scope import (
     DocumentScopeDecision,
+    FileAliasBinding,
     ResolvedDocument,
     SessionDocumentScopeStore,
 )
@@ -142,6 +143,282 @@ def test_session_file_alias_resolves_to_scoped_retrieval():
     assert decision.trace["scope_resolution_status"] == "alias_resolved"
     assert decision.trace["document_scope_changed"] is True
     assert decision.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
+
+
+def test_natural_import_alias_continuity_restores_across_api_session_drift():
+    store = SessionDocumentScopeStore()
+    store.set_continuity_owner(
+        session_id="api-import-turn",
+        owner_value="gateway-chat-1",
+        owner_source="gateway_session_key",
+    )
+    store.set_continuity_owner(
+        session_id="api-followup-drifted",
+        owner_value="gateway-chat-1",
+        owner_source="gateway_session_key",
+    )
+    pending = DocumentScopeDecision(
+        filters={},
+        trace={
+            "scope_resolution_status": "alias_bind_pending_current_retrieval",
+            "alias": "建筑类数据样表",
+            "alias_continuity_source": "natural_import_success",
+        },
+    )
+
+    stored = store.finalize_pending_alias_binding(
+        session_id="api-import-turn",
+        decision=pending,
+        documents=[
+            ResolvedDocument(
+                document_id="doc-imported",
+                title="建筑类数据样表.xlsx",
+                version_id="ver-imported",
+                source_name="建筑类数据样表.xlsx",
+            )
+        ],
+    )
+    decision = store.resolve(
+        session_id="api-followup-drifted",
+        query="围绕 @建筑类数据样表 总结这个文件，必须给出 citation",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert stored.trace["scope_resolution_status"] == "alias_bound"
+    assert stored.trace["alias_continuity_status"] == "stored"
+    assert decision.trace["scope_resolution_status"] == "alias_resolved"
+    assert decision.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert decision.trace["alias_continuity_status"] == "restored"
+    assert decision.trace["alias_continuity_source"] == "bounded_alias_registry"
+    assert decision.trace["alias_continuity_owner_source"] == "gateway_session_key"
+    assert decision.suppress_retrieval is False
+    assert decision.filters["document_id"] == "doc-imported"
+    assert decision.filters["version_id"] == "ver-imported"
+
+
+def test_alias_continuity_different_owner_does_not_restore_imported_alias():
+    store = SessionDocumentScopeStore()
+    store.set_continuity_owner(
+        session_id="api-import-turn",
+        owner_value="gateway-chat-1",
+        owner_source="gateway_session_key",
+    )
+    store.set_continuity_owner(
+        session_id="api-followup-other",
+        owner_value="gateway-chat-2",
+        owner_source="gateway_session_key",
+    )
+
+    store.finalize_pending_alias_binding(
+        session_id="api-import-turn",
+        decision=DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": "建筑类数据样表",
+                "alias_continuity_source": "natural_import_success",
+            },
+        ),
+        documents=[
+            ResolvedDocument(
+                document_id="doc-imported",
+                title="建筑类数据样表.xlsx",
+                version_id="ver-imported",
+                source_name="建筑类数据样表.xlsx",
+            )
+        ],
+    )
+
+    decision = store.resolve(
+        session_id="api-followup-other",
+        query="围绕 @建筑类数据样表 总结这个文件",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.suppress_retrieval is True
+    assert "document_id" not in decision.filters
+    assert decision.trace["scope_resolution_status"] == "alias_missing"
+    assert decision.trace["alias_continuity_status"] == "not_found"
+    assert decision.trace["alias_continuity_owner_source"] == "gateway_session_key"
+
+
+def test_alias_missing_without_stable_owner_reports_stable_owner_missing():
+    store = SessionDocumentScopeStore()
+
+    decision = store.resolve(
+        session_id="api-followup-drifted",
+        query="围绕 @建筑类数据样表 总结这个文件，必须给出 citation",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.suppress_retrieval is True
+    assert decision.trace["alias_continuity_status"] == "not_found"
+    assert decision.trace["alias_continuity_owner_source"] == "process_local_fallback"
+    assert decision.trace["alias_continuity_persistent"] is False
+    assert decision.trace["stable_owner_missing"] is True
+    assert decision.trace["alias_resolution"]["stable_owner_missing"] is True
+
+
+def test_unscoped_alias_continuity_fallback_is_not_persisted_across_store_load(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    first_store = SessionDocumentScopeStore(scope_path)
+    first_store.finalize_pending_alias_binding(
+        session_id="api-import-turn",
+        decision=DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": "建筑类数据样表",
+                "alias_continuity_source": "natural_import_success",
+            },
+        ),
+        documents=[
+            ResolvedDocument(
+                document_id="doc-imported",
+                title="建筑类数据样表.xlsx",
+                version_id="ver-imported",
+                source_name="建筑类数据样表.xlsx",
+            )
+        ],
+    )
+
+    resumed_store = SessionDocumentScopeStore(scope_path)
+    decision = resumed_store.resolve(
+        session_id="api-followup-drifted",
+        query="围绕 @建筑类数据样表 总结这个文件",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.suppress_retrieval is True
+    assert "document_id" not in decision.filters
+    assert decision.trace["scope_resolution_status"] == "alias_missing"
+    assert decision.trace["alias_continuity_status"] == "not_found"
+
+
+def test_expired_alias_continuity_does_not_restore():
+    store = SessionDocumentScopeStore()
+    store.set_continuity_owner(
+        session_id="api-import-turn",
+        owner_value="gateway-chat-1",
+        owner_source="gateway_session_key",
+    )
+    store.set_continuity_owner(
+        session_id="api-followup-drifted",
+        owner_value="gateway-chat-1",
+        owner_source="gateway_session_key",
+    )
+    store.finalize_pending_alias_binding(
+        session_id="api-import-turn",
+        decision=DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": "建筑类数据样表",
+                "alias_continuity_source": "natural_import_success",
+            },
+        ),
+        documents=[
+            ResolvedDocument(
+                document_id="doc-imported",
+                title="建筑类数据样表.xlsx",
+                version_id="ver-imported",
+                source_name="建筑类数据样表.xlsx",
+            )
+        ],
+    )
+    owner = next(iter(store._alias_continuity))
+    store._alias_continuity[owner]["建筑类数据样表"][0] = FileAliasBinding(
+        alias="建筑类数据样表",
+        document_id="doc-imported",
+        title="建筑类数据样表.xlsx",
+        version_id="ver-imported",
+        source_name="建筑类数据样表.xlsx",
+        alias_scope="continuity",
+        scope_source="natural_import_success",
+        updated_at="2000-01-01T00:00:00+00:00",
+        continuity_owner_key=owner,
+        continuity_owner_source="gateway_session_key",
+        continuity_persistent=True,
+        expires_at="2000-01-01T00:00:00+00:00",
+    )
+
+    decision = store.resolve(
+        session_id="api-followup-drifted",
+        query="围绕 @建筑类数据样表 总结这个文件",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.suppress_retrieval is True
+    assert decision.trace["scope_resolution_status"] == "alias_missing"
+    assert decision.trace["alias_continuity_status"] == "expired"
+
+
+def test_alias_continuity_conflict_suppresses_retrieval():
+    store = SessionDocumentScopeStore()
+    store.set_continuity_owner(
+        session_id="api-import-a",
+        owner_value="gateway-chat-1",
+        owner_source="gateway_session_key",
+    )
+    store.set_continuity_owner(
+        session_id="api-import-b",
+        owner_value="gateway-chat-1",
+        owner_source="gateway_session_key",
+    )
+    store.set_continuity_owner(
+        session_id="api-followup-drifted",
+        owner_value="gateway-chat-1",
+        owner_source="gateway_session_key",
+    )
+    for session_id, document_id, version_id in (
+        ("api-import-a", "doc-a", "v1"),
+        ("api-import-b", "doc-b", "v2"),
+    ):
+        store.finalize_pending_alias_binding(
+            session_id=session_id,
+            decision=DocumentScopeDecision(
+                filters={},
+                trace={
+                    "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                    "alias": "建筑类数据样表",
+                    "alias_continuity_source": "natural_import_success",
+                },
+            ),
+            documents=[
+                ResolvedDocument(
+                    document_id=document_id,
+                    title=f"{document_id}.xlsx",
+                    version_id=version_id,
+                    source_name=f"{document_id}.xlsx",
+                )
+            ],
+        )
+
+    decision = store.resolve(
+        session_id="api-followup-drifted",
+        query="围绕 @建筑类数据样表 总结这个文件",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.suppress_retrieval is True
+    assert "document_id" not in decision.filters
+    assert decision.allowed_document_ids == []
+    assert decision.trace["scope_resolution_status"] == "alias_continuity_conflict"
+    assert decision.trace["alias_resolution"]["status"] == "alias_continuity_conflict"
+    assert decision.trace["alias_continuity_status"] == "conflict"
+    assert decision.trace["alias_missing"] is False
+    assert decision.trace["alias_conflict"] is True
+    assert decision.trace["alias_continuity_owner_source"] == "gateway_session_key"
+    candidates = decision.trace["alias_continuity_candidates"]
+    assert {candidate["document_id"] for candidate in candidates} == {"doc-a", "doc-b"}
+    assert all("tmp/" not in str(candidate) and "Users/" not in str(candidate) for candidate in candidates)
+    assert "gateway-chat-1" not in str(decision.trace)
 
 
 def test_stale_alias_maps_version_scope_to_alias_trace():
