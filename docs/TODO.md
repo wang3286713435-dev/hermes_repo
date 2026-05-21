@@ -200,6 +200,14 @@
 - `finalize_pending_alias_binding()` 现在返回 scoped filters 时保留 `version_id`，保证 resume 后 `@主标书` query 继续按 document_id/version_id 检索。
 - 主仓目标测试通过：`./.venv/bin/python -m py_compile ...` 通过，`./.venv/bin/python -m pytest -o addopts='' tests/agent/test_session_document_scope.py -q` 为 `51 passed`。
 - 下一步需要 Codex B review 与 Codex C Day-1 Q1 alias/session 复验；当前不 baseline、不 tag、不 push。
+# TODO 最新状态
+
+- 当前 phase：Phase 2.112f Alias Continuity Restore Fix 已实现，待 Codex B review 与测试机 OpenWebUI / 8642 复验。
+- 修复：owner-scoped alias continuity restore 的 follow-up 诊断已稳定写入顶层 trace 与 `alias_resolution`；持久化 continuity 跨 store / 新 agent instance 恢复已补测试。
+- 验证：py_compile 通过；session/natural import regression `77 passed`；gateway targeted stable-owner tests `3 passed`。
+- 边界：未重复真实导入，未写 DB / facts / versions / OpenSearch / Qdrant，未执行 repair/backfill/reindex，未改 retrieval contract / memory kernel 主架构。
+- 下一步：Codex B review；通过后再由测试机复验 OpenWebUI / 8642 import -> follow-up `@alias` retrieval + citation。
+
 # Phase 2.56e Natural Import Real Upload Client
 
 1. Real Hermes_memory upload client 已接入 `run_agent.py` 的 natural import runtime path。

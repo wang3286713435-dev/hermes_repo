@@ -164,6 +164,49 @@ def test_run_agent_persists_natural_import_alias_as_bound_and_continuity(tmp_pat
     assert decision.filters["version_id"] == "ver-runtime"
 
 
+def test_run_agent_restores_import_alias_continuity_in_new_agent_instance(tmp_path):
+    storage_path = tmp_path / "scope.json"
+    import_agent = object.__new__(AIAgent)
+    import_agent.session_id = "api-natural-import-session"
+    import_agent._gateway_session_key = "gateway-chat-1"
+    import_agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    import_agent._memory_kernel.document_scope._storage_path = storage_path
+    diagnostics = {
+        "ingestion_status": "upload_succeeded",
+        "document_id": "doc-runtime",
+        "version_id": "ver-runtime",
+        "import_source_path": "/tmp/测试文件.docx",
+        "alias_resolution": {
+            "status": "alias_seeded",
+            "alias": "测试文件",
+            "resolved_document_id": "doc-runtime",
+            "resolved_version_id": "ver-runtime",
+        },
+    }
+
+    import_agent._persist_natural_import_alias(diagnostics)
+    followup_agent = object.__new__(AIAgent)
+    followup_agent.session_id = "api-followup-drift-session"
+    followup_agent._gateway_session_key = "gateway-chat-1"
+    followup_agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    followup_agent._memory_kernel.document_scope._storage_path = storage_path
+    followup_agent._memory_kernel.document_scope._load()
+    followup_agent._register_alias_continuity_owner()
+    decision = followup_agent._memory_kernel.resolve_document_scope(
+        session_id="api-followup-drift-session",
+        query="围绕 @测试文件 回答，必须给出 citation",
+        filters={},
+    )
+
+    assert diagnostics["alias_continuity_status"] == "stored"
+    assert decision.suppress_retrieval is False
+    assert decision.trace["scope_resolution_status"] == "alias_resolved"
+    assert decision.trace["alias_continuity_status"] == "restored"
+    assert decision.trace["alias_resolution"]["alias_continuity_status"] == "restored"
+    assert decision.filters["document_id"] == "doc-runtime"
+    assert decision.filters["version_id"] == "ver-runtime"
+
+
 def test_run_agent_hydrates_natural_import_alias_from_conversation_history(tmp_path):
     agent = object.__new__(AIAgent)
     agent.session_id = "api-derived-followup-session"

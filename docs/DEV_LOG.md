@@ -1,5 +1,7 @@
 # DEV_LOG
 
+- [Phase 2.112f] 修复 natural import alias continuity follow-up restore diagnostics：`SessionDocumentScopeStore` 会把 `alias_continuity_status/source/owner_source/persistent` 与 `stable_owner_missing` 稳定传播到 nested `alias_resolution`，并新增跨 store reload / 新 `AIAgent` instance 的 same-owner restore 测试、cross-owner denied、conflict fail-closed 与 missing stable owner diagnostics 覆盖。py_compile 通过，session/natural import regression `77 passed`，gateway stable-owner targeted tests `3 passed`。未重复真实导入，未写 DB / facts / versions / OpenSearch / Qdrant，未 baseline。
+
 - [Phase 2.112e] API server stable owner bridge 已实现：accepted `X-Hermes-Session-Id` 与 whitelisted OpenWebUI conversation headers 会生成 `gateway_session_key` 并传给 `AIAgent`；无 stable owner 仍 fail-closed 并输出 sanitized `stable_owner_missing`；owner 原值由 `SessionDocumentScopeStore` 哈希后用于 trace / persistence。py_compile 通过，API server owner bridge targeted tests `7 passed`，natural import / upload client / session scope regression `106 passed`。未执行真实 OpenWebUI / 8642 smoke，未 baseline。
 
 - [Phase 2.112d] 完成 alias continuity owner-scope review fix：registry 改为 safe owner key + alias 双层索引，stable owner 值哈希化保存；无 stable owner 时仅 process-local / non-persistent fallback；增加 TTL/stale cleanup，跨 owner 不恢复，冲突仍 fail-closed 并 suppress retrieval。py_compile 通过，natural import / upload client / session scope regression `105 passed`，gateway latest-user drift targeted test `1 passed`。未重复真实导入，未写 DB / facts / versions / OpenSearch / Qdrant，未 baseline。

@@ -1302,8 +1302,16 @@ class SessionDocumentScopeStore:
             trace.update(alias_trace)
         if extra_trace:
             trace.update(extra_trace)
-        if trace.get("stable_owner_missing") and isinstance(trace.get("alias_resolution"), dict):
-            trace["alias_resolution"]["stable_owner_missing"] = True
+        if isinstance(trace.get("alias_resolution"), dict):
+            for key in (
+                "alias_continuity_status",
+                "alias_continuity_source",
+                "alias_continuity_owner_source",
+                "alias_continuity_persistent",
+                "stable_owner_missing",
+            ):
+                if key in trace:
+                    trace["alias_resolution"][key] = trace[key]
         return DocumentScopeDecision(
             filters=filters,
             trace=trace,
