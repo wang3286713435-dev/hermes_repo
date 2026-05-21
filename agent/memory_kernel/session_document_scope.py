@@ -76,6 +76,7 @@ class SessionDocumentScopeStore:
     )
     _COMPARE_RE = re.compile(r"(对比|比较|比对)")
     _DIFFERENCE_RE = re.compile(r"(区别|差异|不同)")
+    _FILE_DISCOVERY_RE = re.compile(r"(找出来|找一下|帮我找|哪个文件|哪份文件|有哪些文件|相关文件|候选文件)")
     _PROJECT_RE = re.compile(r"(?:项目|project)\s*[：:]\s*(.+?)(?=\s*(?:任务|task)\s*[：:]|[，。！？\n]|$)", re.IGNORECASE)
     _TASK_RE = re.compile(r"(?:任务|task)\s*[：:]\s*(.+?)(?=[，。！？\n]|$)", re.IGNORECASE)
 
@@ -235,6 +236,24 @@ class SessionDocumentScopeStore:
                 cross_document_allowed=False,
             )
 
+        discovery_candidates = self._discover_file_candidates(session_key, query or "")
+        if discovery_candidates:
+            return self._decision(
+                filters=incoming_filters,
+                state=state,
+                source="file_discovery",
+                status="file_discovery_candidates",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                suppress_retrieval=True,
+                extra_trace={
+                    "file_discovery_requires_clarification": True,
+                    "file_candidates": discovery_candidates,
+                    "alias_candidates": discovery_candidates,
+                },
+            )
+
         if state.active_document_id:
             scoped_filters = self._scoped_filters(
                 incoming_filters,
@@ -359,6 +378,58 @@ class SessionDocumentScopeStore:
     def _normalize_alias(self, alias: str) -> str:
         return (alias or "").strip().lstrip("@")
 
+    def _discover_file_candidates(self, session_key: str, query: str) -> list[dict[str, Any]]:
+        if not self._FILE_DISCOVERY_RE.search(query or ""):
+            return []
+        aliases = self._session_aliases(session_key)
+        if not aliases:
+            return []
+        query_tokens = self._discovery_tokens(query)
+        candidates: list[tuple[int, str, FileAliasBinding]] = []
+        for alias, binding in aliases.items():
+            haystack = self._discovery_text(alias, binding)
+            score = sum(1 for token in query_tokens if token and token in haystack)
+            if score > 0:
+                candidates.append((score, alias, binding))
+        if not candidates and len(aliases) == 1:
+            alias, binding = next(iter(aliases.items()))
+            candidates.append((0, alias, binding))
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return [
+            {
+                "alias": alias,
+                "document_id": binding.document_id,
+                "version_id": binding.version_id,
+                "title": binding.title,
+                "source_name": binding.source_name,
+                "match_reason": "session_alias_fuzzy_match" if score > 0 else "single_session_alias_candidate",
+            }
+            for score, alias, binding in candidates[:5]
+        ]
+
+    def _discovery_tokens(self, query: str) -> list[str]:
+        normalized = re.sub(r"[@《》「」『』\"“”‘’，。！？、/\\:：;；()\[\]\s]+", " ", query or "").strip()
+        raw_tokens = [token for token in normalized.split(" ") if len(token) >= 2]
+        compact = re.sub(r"\s+", "", normalized)
+        tokens = list(raw_tokens)
+        for marker in ("项目", "招标", "要求", "文件", "资料", "清单", "会议", "纪要", "标准"):
+            if marker in compact:
+                tokens.append(marker)
+        return self._unique(tokens)
+
+    def _discovery_text(self, alias: str, binding: FileAliasBinding) -> str:
+        return "".join(
+            value
+            for value in (
+                alias,
+                binding.title,
+                binding.source_name,
+                binding.document_id,
+                binding.version_id,
+            )
+            if value
+        )
+
     def _session_aliases(self, session_key: str) -> dict[str, FileAliasBinding]:
         return self._aliases.setdefault(session_key, {})
 
@@ -376,15 +447,25 @@ class SessionDocumentScopeStore:
         alias: str,
     ) -> DocumentScopeDecision:
         normalized_alias = self._normalize_alias(alias)
+        existing = self._get_alias(session_key, normalized_alias)
         titles = self._extract_title_candidates(query)
         if not titles:
             alias_bind_title = self._extract_alias_bind_title_candidate(query, normalized_alias)
             titles = [alias_bind_title] if alias_bind_title else []
+        is_current_document_binding = bool(self._CURRENT_DOC_RE.search(query or ""))
+        if existing and titles and not is_current_document_binding:
+            if self._title_matches_alias_binding(titles[0], existing):
+                return self._existing_alias_bind_decision(
+                    session_key=session_key,
+                    filters=filters,
+                    state=state,
+                    binding=existing,
+                    changed=state.active_document_id != existing.document_id,
+                )
         documents = self._resolve_titles([titles[0]], filters, resolver) if titles else []
         document: ResolvedDocument | None = documents[0] if documents else None
         source = "alias_bind_title"
 
-        is_current_document_binding = bool(self._CURRENT_DOC_RE.search(query or ""))
         if document is None and is_current_document_binding:
             if state.active_document_id:
                 document = ResolvedDocument(
@@ -429,7 +510,6 @@ class SessionDocumentScopeStore:
                 ),
             )
 
-        existing = self._get_alias(session_key, normalized_alias)
         alias_conflict = bool(existing and document and existing.document_id != document.document_id)
         if document is None:
             return self._decision(
@@ -488,6 +568,67 @@ class SessionDocumentScopeStore:
                 alias_conflict=alias_conflict,
             ),
         )
+
+    def _existing_alias_bind_decision(
+        self,
+        *,
+        session_key: str,
+        filters: dict[str, Any],
+        state: DocumentScopeState,
+        binding: FileAliasBinding,
+        changed: bool,
+    ) -> DocumentScopeDecision:
+        new_state = DocumentScopeState(
+            active_document_id=binding.document_id,
+            active_document_title=binding.title,
+            active_document_version_id=binding.version_id,
+            active_project=state.active_project,
+            active_task=state.active_task,
+            scope_source="file_alias",
+            updated_at=self._now(),
+        )
+        self._states[session_key] = new_state
+        self._save()
+        scoped_filters = self._scoped_filters(filters, binding.document_id, binding.version_id)
+        return self._decision(
+            filters=scoped_filters,
+            state=new_state,
+            source="file_alias",
+            status="alias_bound",
+            changed=changed,
+            allowed_document_ids=[binding.document_id],
+            cross_document_allowed=False,
+            alias_trace=self._alias_trace(
+                status="alias_bound",
+                alias=binding.alias,
+                binding=binding,
+                alias_conflict=False,
+            ),
+        )
+
+    def _title_matches_alias_binding(self, title: str, binding: FileAliasBinding) -> bool:
+        normalized_title = self._normalize_title_match_text(title)
+        if not normalized_title:
+            return False
+        candidates = [
+            binding.alias,
+            binding.title,
+            binding.source_name,
+        ]
+        for candidate in candidates:
+            normalized_candidate = self._normalize_title_match_text(candidate or "")
+            if not normalized_candidate:
+                continue
+            if normalized_title == normalized_candidate:
+                return True
+            if normalized_title in normalized_candidate or normalized_candidate in normalized_title:
+                return True
+        return False
+
+    def _normalize_title_match_text(self, value: str) -> str:
+        text = self._clean_title(value or "")
+        text = re.sub(r"\.(?:docx?|xlsx?|pptx?|pdf|txt|md|csv)$", "", text, flags=re.IGNORECASE)
+        return re.sub(r"[\s_\-，。！？:：；;（）()《》「」『』\"“”‘’]+", "", text).lower()
 
     def _resolve_single_alias_reference(
         self,
@@ -829,6 +970,7 @@ class SessionDocumentScopeStore:
         cross_document_allowed: bool,
         alias_trace: dict[str, Any] | None = None,
         suppress_retrieval: bool = False,
+        extra_trace: dict[str, Any] | None = None,
     ) -> DocumentScopeDecision:
         trace = {
             "active_document_id": state.active_document_id,
@@ -864,6 +1006,8 @@ class SessionDocumentScopeStore:
         }
         if alias_trace:
             trace.update(alias_trace)
+        if extra_trace:
+            trace.update(extra_trace)
         return DocumentScopeDecision(
             filters=filters,
             trace=trace,

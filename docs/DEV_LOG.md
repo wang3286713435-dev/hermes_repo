@@ -1,5 +1,9 @@
 # DEV_LOG
 
+- [Phase 2.112b] 修复 natural import alias/retrieval pause：OpenAI-compatible conversation 的 backend session id 漂移时，`run_agent.py` 会从上一轮 natural import assistant diagnostics 恢复 session alias，不依赖 ordinary memory；已存在导入 alias 的 title rebind 会复用既有 `document_id/version_id`，避免 `alias_bind_failed`。py_compile 通过，targeted natural import / upload client / session scope regression `99 passed`。本轮未重复真实导入，未写 DB / facts / versions / OpenSearch / Qdrant。
+
+- [Phase 2.112] 修复 natural import 成功后的 session alias 持久化与 same-session retrieval 断链：无 alias 时生成安全 alias，导入成功 diagnostics 会从 `alias_seeded` 更新为 `alias_bound`，后续 `@alias` query 使用 imported `document_id/version_id` scoped filters。新增 bounded session alias discovery；py_compile 通过，targeted natural import / upload client / session scope regression `97 passed`。本轮未跑真实 upload / OpenWebUI / 8642 smoke。
+
 - [Phase 2.56d] 完成 runtime natural import preflight hook：`run_agent.py` 会在 memory kernel retrieval / LLM answer 前拦截明确导入 intent；默认真实 upload 关闭并返回 `upload_adapter_status=disabled` / `ingestion_status=not_executed`。新增 `natural_file_import_runtime.py` 与目标测试，py_compile 通过，natural import 测试 `28 passed`，disabled-path CLI smoke 通过；未上传真实文件或调用真实 upload API。
 - [Phase 2.56a] 完成 Natural Import Real Adapter Skeleton：新增 feature-flagged upload adapter，默认 disabled；preflight 默认 `real_upload_enabled=false`，有效导入请求 fail-closed 为 `real_upload_disabled` 且不调用 adapter。fake adapter success 需显式启用，可 seed alias；目标测试 `25 passed`。本轮未调用真实 Hermes_memory upload API、未上传文件、未改 retrieval contract。
 - [Phase 2.10] 新增会话文件作用域最小实现，支持同一 Hermes 会话内文件切换与 evidence 防污染。

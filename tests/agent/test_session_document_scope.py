@@ -620,6 +620,88 @@ def test_session_file_alias_current_tender_without_active_document_uses_retrieva
     assert result.trace["alias_resolution"]["resolved_document_id"] == "doc-a"
 
 
+def test_natural_import_seeded_alias_persists_and_scopes_same_session_retrieval(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    store = SessionDocumentScopeStore(scope_path)
+    decision = DocumentScopeDecision(
+        filters={},
+        trace={
+            "scope_resolution_status": "alias_bind_pending_current_retrieval",
+            "alias": "建筑类数据样表",
+        },
+    )
+
+    bound = store.finalize_pending_alias_binding(
+        session_id="natural-import-session",
+        decision=decision,
+        documents=[
+            ResolvedDocument(
+                document_id="doc-imported",
+                title="建筑类数据样表.xlsx",
+                version_id="ver-imported",
+                source_name="建筑类数据样表.xlsx",
+            )
+        ],
+    )
+    resumed = SessionDocumentScopeStore(scope_path).resolve(
+        session_id="natural-import-session",
+        query="围绕 @建筑类数据样表 总结这个文件的主要内容，必须给出 citation",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert bound.trace["alias_resolution"]["status"] == "alias_bound"
+    assert bound.trace["active_document_id"] == "doc-imported"
+    assert resumed.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert resumed.filters["document_id"] == "doc-imported"
+    assert resumed.filters["version_id"] == "ver-imported"
+    assert resumed.allowed_document_ids == ["doc-imported"]
+
+
+def test_existing_natural_import_alias_title_bind_does_not_fail_when_resolver_misses(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    store = SessionDocumentScopeStore(scope_path)
+    decision = DocumentScopeDecision(
+        filters={},
+        trace={
+            "scope_resolution_status": "alias_bind_pending_current_retrieval",
+            "alias": "建筑类数据样表",
+        },
+    )
+    store.finalize_pending_alias_binding(
+        session_id="s1",
+        decision=decision,
+        documents=[
+            ResolvedDocument(
+                document_id="doc-imported",
+                title="建筑类数据样表.xlsx",
+                version_id="ver-imported",
+                source_name="建筑类数据样表.xlsx",
+            )
+        ],
+    )
+
+    rebound = store.resolve(
+        session_id="s1",
+        query="把《建筑类数据样表》设为 @建筑类数据样表",
+        filters={},
+        resolver=lambda titles, filters: [],
+    )
+    followup = store.resolve(
+        session_id="s1",
+        query="围绕 @建筑类数据样表 总结内容",
+        filters={},
+        resolver=lambda titles, filters: [],
+    )
+
+    assert rebound.trace["alias_resolution"]["status"] == "alias_bound"
+    assert rebound.trace["alias_bind_failure_reason"] is None
+    assert rebound.filters["document_id"] == "doc-imported"
+    assert rebound.filters["version_id"] == "ver-imported"
+    assert followup.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert followup.suppress_retrieval is False
+
+
 def test_session_file_alias_current_tender_uses_top_document_when_retrieval_has_other_candidates(tmp_path):
     class FakeRetrieval:
         def __init__(self):
@@ -707,6 +789,28 @@ def test_session_file_alias_current_tender_uses_top_document_when_retrieval_has_
     assert resumed.trace.get("retrieval_suppressed") is not True
     assert fake_retrieval.requests[-1].filters["document_id"] == "doc-main"
     assert fake_retrieval.requests[-1].filters["version_id"] == "v-main"
+
+
+def test_session_file_discovery_returns_safe_alias_candidates_without_retrieval():
+    store = SessionDocumentScopeStore()
+    store.resolve(session_id="s1", query="把《A标书》设为 @C塔招标文件", filters={}, resolver=_resolver)
+    store.resolve(session_id="s1", query="把《B标书》设为 @C塔招标清单", filters={}, resolver=_resolver)
+
+    decision = store.resolve(
+        session_id="s1",
+        query="C塔项目的招标要求文件你帮我找出来",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.suppress_retrieval is True
+    assert decision.trace["scope_resolution_status"] == "file_discovery_candidates"
+    assert decision.trace["file_discovery_requires_clarification"] is True
+    assert [candidate["alias"] for candidate in decision.trace["file_candidates"]] == [
+        "C塔招标文件",
+        "C塔招标清单",
+    ]
+    assert "document_id" not in decision.filters
 
 
 def test_session_file_alias_title_bind_still_rejects_ambiguous_retrieval(tmp_path):

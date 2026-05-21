@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
+from pathlib import PurePosixPath
 from typing import Any
 
 from agent.memory_kernel.natural_file_import import (
@@ -177,20 +179,24 @@ def _alias_seeded(
     request: NaturalFileImportRequest,
     upload_result: NaturalFileUploadResult,
 ) -> dict[str, Any]:
-    if not request.alias:
-        return {
-            "status": "not_requested",
-            "alias": None,
-            "resolved_document_id": None,
-            "resolved_version_id": None,
-        }
+    alias = request.alias or _generated_safe_alias(request)
+    alias_generated = not bool(request.alias)
     return {
         "status": "alias_seeded",
-        "alias": request.alias,
+        "alias": alias,
         "alias_scope": "session",
+        "alias_generated": alias_generated,
         "resolved_document_id": upload_result.document_id,
         "resolved_version_id": upload_result.version_id,
     }
+
+
+def _generated_safe_alias(request: NaturalFileImportRequest) -> str:
+    source_name = PurePosixPath(request.source_path or "").name
+    stem = PurePosixPath(source_name).stem if source_name else ""
+    raw = request.title or stem or "导入文件"
+    alias = re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fff]+", "", raw)
+    return alias[:24] or "导入文件"
 
 
 def _missing_success_field(upload_result: NaturalFileUploadResult) -> str | None:

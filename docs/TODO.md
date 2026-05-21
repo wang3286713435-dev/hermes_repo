@@ -1,5 +1,16 @@
 # TODO
 
+## Phase 2.112
+
+- 已完成 natural import upload-success -> session alias / active document / same-session scoped retrieval 最小修复。
+- 成功导入后会把 seeded alias 持久化为 session file alias，并将 diagnostics 更新为 `alias_bound`；后续 `@alias` query 会带 `document_id/version_id` scoped filters。
+- Phase 2.112b 已补真实 OpenWebUI / 8642 pause 对应的 alias blocker：当兼容接口 session key 漂移时，会从上一轮 natural import diagnostics 恢复 session alias；已存在导入 alias 的 title rebind 不再因 title resolver miss 返回 `alias_bind_failed`。
+- `alias_missing=true` / `retrieval_suppressed=true` 的 follow-up 断链已在目标测试中覆盖：同一 conversation history 中的 import response 可恢复 `@alias -> document_id/version_id` scoped retrieval。
+- 未提供 alias 时会生成安全 alias，并在成功响应中提示用户可继续用 `@alias` 查询。
+- 已补 session alias bounded discovery；模糊找文件请求只返回 session alias 候选并 suppress ordinary retrieval，避免误检索旧文件。
+- 主仓 targeted regression：py_compile 通过，natural import / upload client / session scope tests `99 passed`。
+- 待办：Codex B review 后交测试机 Codex 跑真实 OpenWebUI / 8642 natural import -> same-session retrieval / citation 验收；本轮未执行真实 upload。
+
 ## Phase 2.56d
 
 - 已完成 natural import runtime wiring 最小实现。

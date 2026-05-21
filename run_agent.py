@@ -84,7 +84,10 @@ from agent.memory_kernel import MemoryKernel, MemoryKernelConfig
 from agent.memory_kernel.interfaces import KernelRequest
 from agent.memory_kernel.merge_policy import merge_request_contexts
 from agent.memory_kernel.hermes_memory_upload_client import HermesMemoryUploadClient
-from agent.memory_kernel.natural_file_import_runtime import maybe_handle_natural_file_import
+from agent.memory_kernel.natural_file_import_runtime import (
+    maybe_handle_natural_file_import,
+    render_natural_file_import_response,
+)
 from agent.memory_kernel.natural_file_upload_adapter import FeatureFlaggedHermesMemoryUploadAdapter
 from agent.memory_kernel.session_document_scope import DocumentScopeDecision, ResolvedDocument
 from agent.retry_utils import jittered_backoff
@@ -121,6 +124,15 @@ from agent.codex_responses_adapter import (
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
 )
+
+
+def _none_if_text_null(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null"}:
+        return None
+    return text
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -2950,12 +2962,102 @@ class AIAgent:
         diagnostics["alias_persisted"] = (
             updated_decision.trace.get("scope_resolution_status") == "alias_bound"
         )
+        if diagnostics["alias_persisted"]:
+            alias_trace = updated_decision.trace.get("alias_resolution")
+            if isinstance(alias_trace, dict):
+                persisted_alias_resolution = dict(alias_trace)
+                if (
+                    persisted_alias_resolution.get("resolved_version_id") is None
+                    and updated_decision.trace.get("alias_version_id")
+                ):
+                    persisted_alias_resolution["resolved_version_id"] = (
+                        updated_decision.trace.get("alias_version_id")
+                    )
+                diagnostics["alias_resolution"] = persisted_alias_resolution
         diagnostics["alias_persist_trace"] = {
             "scope_resolution_status": updated_decision.trace.get("scope_resolution_status"),
             "alias": updated_decision.trace.get("alias"),
             "active_document_id": updated_decision.trace.get("active_document_id"),
             "active_document_version_id": updated_decision.trace.get("active_document_version_id"),
         }
+
+    def _hydrate_natural_import_aliases_from_history(self, conversation_history: List[Dict] = None) -> None:
+        """Restore natural-import aliases from prior assistant diagnostics.
+
+        OpenAI-compatible clients usually send the full conversation history,
+        but their derived backend session id can still drift when attachment
+        metadata changes.  Natural import diagnostics are not evidence, but
+        they are enough to restore the session alias binding for follow-up
+        scoped retrieval.
+        """
+
+        if not self._memory_kernel or not conversation_history:
+            return
+
+        hydrated_aliases: set[str] = set()
+        for msg in reversed(conversation_history):
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or "Natural file import diagnostics:" not in content:
+                continue
+            diagnostics = self._natural_import_diagnostics_from_response(content)
+            alias_resolution = diagnostics.get("alias_resolution") if diagnostics else None
+            alias = alias_resolution.get("alias") if isinstance(alias_resolution, dict) else None
+            if not diagnostics or not alias or alias in hydrated_aliases:
+                continue
+            self._persist_natural_import_alias(diagnostics)
+            if diagnostics.get("alias_persisted"):
+                hydrated_aliases.add(str(alias))
+
+    def _natural_import_diagnostics_from_response(self, content: str) -> Dict[str, Any]:
+        fields: Dict[str, str] = {}
+        for raw_line in (content or "").splitlines():
+            line = raw_line.strip()
+            if not line.startswith("- ") or "=" not in line:
+                continue
+            key, value = line[2:].split("=", 1)
+            fields[key.strip()] = value.strip()
+
+        if fields.get("ingestion_status") != "upload_succeeded":
+            return {}
+
+        document_id = _none_if_text_null(fields.get("document_id"))
+        version_id = _none_if_text_null(fields.get("version_id"))
+        if not document_id:
+            return {}
+
+        alias_resolution: Dict[str, Any] = {}
+        raw_alias_resolution = fields.get("alias_resolution")
+        if raw_alias_resolution:
+            try:
+                parsed = json.loads(raw_alias_resolution)
+                if isinstance(parsed, dict):
+                    alias_resolution = parsed
+            except Exception:
+                alias_resolution = {}
+
+        alias = alias_resolution.get("alias") or self._natural_import_alias_from_response(content)
+        if not alias:
+            return {}
+
+        return {
+            "ingestion_status": "upload_succeeded",
+            "document_id": document_id,
+            "version_id": version_id,
+            "import_source_path": _none_if_text_null(fields.get("import_source_path")),
+            "import_title": _none_if_text_null(fields.get("import_title")),
+            "alias_resolution": {
+                "status": "alias_seeded",
+                "alias": str(alias).lstrip("@"),
+                "resolved_document_id": document_id,
+                "resolved_version_id": version_id,
+            },
+        }
+
+    def _natural_import_alias_from_response(self, content: str) -> str | None:
+        match = re.search(r"别名我设定为：@([A-Za-z0-9_\-\u4e00-\u9fff]+)", content or "")
+        return match.group(1) if match else None
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
@@ -8757,12 +8859,15 @@ class AIAgent:
         )
         if _natural_import_response is not None:
             self._persist_natural_import_alias(_natural_import_response.diagnostics)
+            final_response = render_natural_file_import_response(
+                _natural_import_response.diagnostics
+            )
             user_msg = {"role": "user", "content": user_message}
-            assistant_msg = {"role": "assistant", "content": _natural_import_response.final_response}
+            assistant_msg = {"role": "assistant", "content": final_response}
             messages.extend([user_msg, assistant_msg])
             self._persist_session(messages, conversation_history)
             return {
-                "final_response": _natural_import_response.final_response,
+                "final_response": final_response,
                 "last_reasoning": None,
                 "messages": messages,
                 "api_calls": 0,
@@ -8777,6 +8882,8 @@ class AIAgent:
                     "natural_file_import": _natural_import_response.diagnostics,
                 },
             }
+
+        self._hydrate_natural_import_aliases_from_history(conversation_history)
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
