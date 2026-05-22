@@ -1,5 +1,12 @@
 # TODO
 
+## Phase 2.114a
+
+- 已完成 natural import path parser 最小修复：中文全角冒号后的绝对路径、中文句号结尾、中文路径、未加引号且包含空格的目录路径均可提取。
+- 多路径 prompt 仍 fail-closed 为 `multiple_paths_not_supported`；普通查看 / 总结路径 prompt 不触发 import。
+- 验证：py_compile 通过；`tests/agent/test_natural_file_import.py tests/agent/test_natural_file_import_flow.py tests/agent/test_natural_file_import_runtime.py` 为 `54 passed`。
+- 下一步：测试机 / OpenWebUI / 8642 复跑 Phase 2.114 final user-flow acceptance；本轮未上传文件、未写 DB / facts / versions / OpenSearch / Qdrant。
+
 ## Phase 2.113a
 
 - 已完成 self-awareness review fix：fuzzy file-discovery guard 不再把普通内容检索中的“帮我找一下 / 找一下”误判为 `file_discovery_no_safe_candidate`。

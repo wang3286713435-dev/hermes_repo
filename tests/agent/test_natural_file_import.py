@@ -41,6 +41,31 @@ def test_parse_alias_binding():
     assert request.trace["alias_resolution"]["alias"] == "硬件清单"
 
 
+def test_parse_chinese_prompt_with_fullwidth_colon_and_period():
+    request = parse_natural_file_import(
+        "请帮我导入这个文件。\n"
+        "文件路径：/Users/hermes/import_samples/建筑类数据_20260519.xlsx。\n"
+        "项目上下文：自然语言导入测试 / 建筑类数据结构样表。\n"
+        "别名设为 @建筑类数据样表。"
+    )
+
+    assert request.detected is True
+    assert request.source_path == "/Users/hermes/import_samples/建筑类数据_20260519.xlsx"
+    assert request.alias == "建筑类数据样表"
+    assert request.failed_reason is None
+
+
+def test_parse_unquoted_path_with_chinese_characters_and_spaces():
+    request = parse_natural_file_import(
+        "请导入文件路径：/Users/vc/Documents/New project/hermes训练文件 /表格/建筑类数据_20260519.xlsx，别名设为 @建筑类数据样表"
+    )
+
+    assert request.detected is True
+    assert request.source_path == "/Users/vc/Documents/New project/hermes训练文件 /表格/建筑类数据_20260519.xlsx"
+    assert request.alias == "建筑类数据样表"
+    assert request.failed_reason is None
+
+
 @pytest.mark.parametrize(
     "phrase",
     [
@@ -127,6 +152,16 @@ def test_missing_path_fails_closed():
 
 def test_multiple_paths_fail_closed():
     request = parse_natural_file_import("把 /tmp/a.pdf 和 /tmp/b.pdf 导入企业记忆")
+
+    assert request.detected is True
+    assert request.failed_reason == "multiple_paths_not_supported"
+    assert request.trace["import_failed_reason"] == "multiple_paths_not_supported"
+
+
+def test_multiple_paths_in_chinese_prompt_fail_closed():
+    request = parse_natural_file_import(
+        "请导入文件路径：/Users/hermes/a.xlsx 和 /Users/hermes/b.xlsx，别名设为 @多个文件"
+    )
 
     assert request.detected is True
     assert request.failed_reason == "multiple_paths_not_supported"

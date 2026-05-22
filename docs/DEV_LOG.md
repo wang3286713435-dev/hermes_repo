@@ -1,5 +1,7 @@
 # DEV_LOG
 
+- [Phase 2.114a] 修复 Phase 2.114 final user-flow acceptance 暴露的 natural import path parser blocker：未加引号路径现在可从中文全角冒号后提取，可保留中文路径、目录空格，并会裁掉中文句号；多路径仍 fail-closed，普通路径查看 / 总结不误触发 import。py_compile 通过，natural import parser / flow / runtime tests `54 passed`。未执行真实 OpenWebUI / 8642 import，未上传文件，未写 DB / facts / versions / OpenSearch / Qdrant。
+
 - [Phase 2.113a] 修复 Codex B review 指出的 fuzzy file-discovery regression：`找一下 / 帮我找` 只有在明确询问候选文件时才 suppress ordinary retrieval，`工程地点 / 工期要求 / 付款比例 / 表内数量` 等内容查询不再被转成 `file_discovery_no_safe_candidate`。同时补宽 self-awareness trigger，覆盖“你可以帮我管理文件吗 / 你能管理公司文件吗 / 能不能管理文件 / 你怎么使用记忆库”。py_compile 通过，session scope / structured citation / natural import runtime regression `102 passed`；未跑 OpenWebUI / 8642 live smoke，未上传文件，未写 DB / facts / versions / OpenSearch / Qdrant。
 
 - [Phase 2.112g] 修复 header-only stable owner restore：API server 现在把 follow-up 请求中的 `X-Hermes-Session-Id` 也视为 stable owner fallback header；accepted import turn 与 header-only follow-up 会得到同一 safe owner，从而恢复 owner-scoped alias continuity。新增 gateway targeted tests 覆盖 header-only owner、accepted/header-only 等价、follow-up restore scoped filters 与 no `stable_owner_missing`；py_compile 通过，targeted gateway tests `3 passed`，natural import / upload client / session scope regression `109 passed`。完整 gateway 文件在当前 `.venv` 因缺 async pytest 插件 false-fail existing async tests，未 baseline，待 Codex B review 与测试机 OpenWebUI / 8642 复验。

@@ -11,7 +11,11 @@ _NEGATED_IMPORT_ACTION_RE = re.compile(
     r"(?:请\s*)?(?:不要|不|别)\s*(?:把\s+.+?\s*)?(?:导入|上传|收录|加入企业记忆|写入企业记忆)"
 )
 _QUOTED_PATH_RE = re.compile(r"[\"'“”‘’](/.+?)[\"'“”‘’]")
-_UNQUOTED_PATH_RE = re.compile(r"(?<!\S)(/[^\s，,。；;！？!?]+)")
+_UNQUOTED_PATH_RE = re.compile(
+    r"(/[^，,。；;！？!?\n\r]+?\.[A-Za-z0-9]{1,12})",
+    re.IGNORECASE,
+)
+_DIRECTORY_PATH_RE = re.compile(r"(/[^\s，,。；;！？!?\n\r]+/)")
 _TITLE_RE = re.compile(r"(?:标题|名称)\s*(?:叫|为|=|：|:)\s*(.+?)(?=[，,。；;\n]|$)")
 _DOCUMENT_TYPE_RE = re.compile(r"(?:document_type|文档类型)\s*(?:=|：|:)\s*([A-Za-z0-9_\-\u4e00-\u9fff]+)")
 _SOURCE_TYPE_RE = re.compile(r"(?:source_type|来源类型)\s*(?:=|：|:)\s*([A-Za-z0-9_\-]+)")
@@ -126,6 +130,9 @@ def _extract_paths(text: str) -> list[str]:
     unquoted_source = "".join(masked)
     for match in _UNQUOTED_PATH_RE.finditer(unquoted_source):
         paths.append(_clean_path(match.group(1)))
+    if not paths:
+        for match in _DIRECTORY_PATH_RE.finditer(unquoted_source):
+            paths.append(_clean_path(match.group(1)))
     return _unique([path for path in paths if path])
 
 
