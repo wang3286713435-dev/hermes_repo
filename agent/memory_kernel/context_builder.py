@@ -16,16 +16,18 @@ from .interfaces import KernelCitation, KernelItem, KernelResult, QueryRoute, Re
 class ContextBuilder:
     def build(self, route: QueryRoute, retrieval: RetrievalOutput) -> str:
         trace = retrieval.trace or {}
+        kernel_capability_lines = self._kernel_capability_lines(trace)
         scope_lines = self._scope_lines(trace)
         facts_diagnostic_lines = self._facts_diagnostic_lines(trace)
         meeting_diagnostic_lines = self._meeting_diagnostic_lines(trace, retrieval)
         confirmed_facts_lines = self._confirmed_facts_lines(trace)
         file_steward_lines = self._file_steward_lines(trace, retrieval)
         if (
-            not route.needs_retrieval
+            (not route.needs_retrieval and not kernel_capability_lines)
             or (
                 not retrieval.items
                 and not retrieval.citations
+                and not kernel_capability_lines
                 and not scope_lines
                 and not facts_diagnostic_lines
                 and not meeting_diagnostic_lines
@@ -41,6 +43,11 @@ class ContextBuilder:
             f"Route: {route.route_type}; retrieval_mode={route.mode}; backend={retrieval.backend}",
             "",
         ]
+        if kernel_capability_lines:
+            parts.append("Hermes Memory Kernel capability boundary:")
+            parts.extend(kernel_capability_lines)
+            parts.append("")
+
         if scope_lines:
             parts.append("Session scope state:")
             parts.extend(scope_lines)
@@ -91,6 +98,20 @@ class ContextBuilder:
 
         parts.append("</enterprise-memory-context>")
         return "\n".join(parts).strip()
+
+    def _kernel_capability_lines(self, trace: dict) -> list[str]:
+        if not trace.get("kernel_capability_requested"):
+            return []
+        return [
+            "governed_import_catalog=true; Hermes can help import, catalog, and reference enterprise files only through governed adapters and session state.",
+            "aliases_and_workspace_refs=true; use safe aliases, document_id/version_id, and workspace references instead of raw local paths.",
+            "retrieval_evidence_and_citations_required=true; content answers must be grounded in retrieval evidence and citations.",
+            "missing_evidence_policy=Missing Evidence; if evidence is absent or ambiguous, say Missing Evidence / needs manual review.",
+            "low_sensitive_continuity_hints_only=true; continuity may use aliases, document/version ids, session state, and bounded diagnostics only.",
+            "raw_paths_raw_content_secrets_forbidden=true; never claim to remember raw storage paths, raw document content, passwords, tokens, or secrets.",
+            "memory_as_evidence=false; diagnostics, aliases, and history memory are not answer evidence.",
+            "dwg_rvt_bim_content_claim_without_evidence_forbidden=true; do not claim DWG/RVT/BIM model content understanding unless retrieval evidence explicitly supports it.",
+        ]
 
     def result_to_payload(self, result: KernelResult) -> dict:
         return {

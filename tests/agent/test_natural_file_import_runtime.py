@@ -81,6 +81,43 @@ def test_fake_adapter_success_returns_upload_fields_and_alias_seeded():
     assert "别名我设定为：@测试文件" in response.final_response
 
 
+def test_success_response_explains_import_status_followups_and_evidence_boundary():
+    response = maybe_handle_natural_file_import(
+        "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    rendered = response.final_response
+
+    assert "Hermes_memory import status: upload_succeeded" in rendered
+    assert "document_id=doc-runtime" in rendered
+    assert "version_id=ver-runtime" in rendered
+    assert "chunk_count=4" in rendered
+    assert "indexed_count=4" in rendered
+    assert "建议后续这样问" in rendered
+    assert "围绕 @测试文件" in rendered
+    assert "requires_retrieval_evidence=true" in rendered
+    assert "Missing Evidence" in rendered
+    assert "导入诊断不是 retrieval evidence" in rendered
+
+
+def test_success_response_uses_generated_safe_alias_without_exposing_raw_path():
+    response = maybe_handle_natural_file_import(
+        "请把 /Users/example/private/建筑类数据样表.xlsx 导入企业记忆",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    assert response.diagnostics["alias_resolution"]["alias_generated"] is True
+    assert response.diagnostics["alias_resolution"]["alias"] == "建筑类数据样表"
+    assert "别名我设定为：@建筑类数据样表" in response.final_response
+    assert "recommended_alias=@建筑类数据样表" in response.final_response
+    assert "/Users/example/private" not in response.final_response
+
+
 def test_render_success_response_uses_persisted_alias_bound_status():
     diagnostics = {
         "natural_import_detected": True,

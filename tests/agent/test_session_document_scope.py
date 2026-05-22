@@ -1203,6 +1203,58 @@ def test_session_file_discovery_returns_safe_alias_candidates_without_retrieval(
     assert "document_id" not in decision.filters
 
 
+def test_session_file_discovery_no_candidate_suppresses_retrieval_with_missing_evidence_boundary():
+    store = SessionDocumentScopeStore()
+
+    decision = store.resolve(
+        session_id="s1",
+        query="帮我找一下C塔项目那份文件",
+        filters={},
+        resolver=_resolver,
+    )
+
+    assert decision.suppress_retrieval is True
+    assert decision.trace["scope_resolution_status"] == "file_discovery_no_safe_candidate"
+    assert decision.trace["file_discovery_requires_clarification"] is True
+    assert decision.trace["file_candidates"] == []
+    assert decision.trace["no_safe_file_candidate"] is True
+    assert decision.trace["requires_retrieval_evidence"] is True
+    assert decision.trace["missing_evidence_policy"] == "Missing Evidence"
+    assert "document_id" not in decision.filters
+
+
+def test_session_file_discovery_does_not_suppress_ordinary_content_lookup():
+    store = SessionDocumentScopeStore()
+
+    for query in [
+        "帮我找一下工程地点",
+        "帮我找一下主标书里的工期要求",
+        "帮我查一下付款比例",
+        "找一下这份表里的数量",
+    ]:
+        decision = store.resolve(session_id=f"s-{query}", query=query, filters={}, resolver=_resolver)
+
+        assert decision.suppress_retrieval is False
+        assert decision.trace["scope_resolution_status"] == "unscoped"
+        assert decision.trace["scope_resolution_status"] != "file_discovery_no_safe_candidate"
+
+
+def test_session_file_discovery_preserves_clear_file_candidate_queries():
+    store = SessionDocumentScopeStore()
+
+    for query in [
+        "C塔项目的招标要求文件你帮我找出来",
+        "帮我找 C塔项目相关文件",
+        "有哪些 C塔项目人力配置相关文件",
+    ]:
+        decision = store.resolve(session_id=f"s-{query}", query=query, filters={}, resolver=_resolver)
+
+        assert decision.suppress_retrieval is True
+        assert decision.trace["scope_resolution_status"] == "file_discovery_no_safe_candidate"
+        assert decision.trace["file_discovery_requires_clarification"] is True
+        assert decision.trace["file_candidates"] == []
+
+
 def test_session_file_alias_title_bind_still_rejects_ambiguous_retrieval(tmp_path):
     class FakeRetrieval:
         def __init__(self):

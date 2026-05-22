@@ -181,6 +181,46 @@ def test_context_builder_renders_pptx_structured_citation():
     assert "slide_title=总体建设目标" in context
 
 
+def test_context_builder_renders_kernel_self_awareness_boundaries_without_evidence():
+    retrieval = RetrievalOutput(
+        items=[],
+        citations=[],
+        backend="hermes_memory",
+        trace={"kernel_capability_requested": True},
+    )
+
+    context = ContextBuilder().build(
+        route=type("Route", (), {"needs_retrieval": True, "route_type": "enterprise_retrieval", "mode": "hybrid"})(),
+        retrieval=retrieval,
+    )
+
+    assert "Hermes Memory Kernel capability boundary" in context
+    assert "governed_import_catalog=true" in context
+    assert "aliases_and_workspace_refs=true" in context
+    assert "retrieval_evidence_and_citations_required=true" in context
+    assert "missing_evidence_policy=Missing Evidence" in context
+    assert "low_sensitive_continuity_hints_only=true" in context
+    assert "raw_paths_raw_content_secrets_forbidden=true" in context
+    assert "dwg_rvt_bim_content_claim_without_evidence_forbidden=true" in context
+
+
+def test_kernel_capability_trigger_covers_file_management_wording():
+    kernel = MemoryKernel.__new__(MemoryKernel)
+
+    for query in [
+        "你可以帮我管理文件吗",
+        "你能管理公司文件吗",
+        "能不能管理文件",
+        "你怎么使用记忆库",
+    ]:
+        trace = kernel._with_kernel_capability_trace({}, KernelRequest(query=query, session_id="s1"))
+
+        assert trace["kernel_capability_requested"] is True
+        assert trace["facts_as_answer"] is False
+        assert trace["transcript_as_fact"] is False
+        assert trace["snapshot_as_answer"] is False
+
+
 def test_context_builder_renders_structured_fields_on_citation_lines():
     retrieval = RetrievalOutput(
         items=[],

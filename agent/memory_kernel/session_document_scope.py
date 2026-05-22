@@ -83,7 +83,10 @@ class SessionDocumentScopeStore:
     )
     _COMPARE_RE = re.compile(r"(对比|比较|比对)")
     _DIFFERENCE_RE = re.compile(r"(区别|差异|不同)")
-    _FILE_DISCOVERY_RE = re.compile(r"(找出来|找一下|帮我找|哪个文件|哪份文件|有哪些文件|相关文件|候选文件)")
+    _FILE_DISCOVERY_RE = re.compile(
+        r"(哪个文件|哪份文件|那份文件|有哪些[^，。！？\n]{0,24}文件|相关文件|候选文件|"
+        r"(?:文件|文档|资料|材料)[^，。！？\n]{0,24}找出来)"
+    )
     _PROJECT_RE = re.compile(r"(?:项目|project)\s*[：:]\s*(.+?)(?=\s*(?:任务|task)\s*[：:]|[，。！？\n]|$)", re.IGNORECASE)
     _TASK_RE = re.compile(r"(?:任务|task)\s*[：:]\s*(.+?)(?=[，。！？\n]|$)", re.IGNORECASE)
 
@@ -326,6 +329,25 @@ class SessionDocumentScopeStore:
                     "file_discovery_requires_clarification": True,
                     "file_candidates": discovery_candidates,
                     "alias_candidates": discovery_candidates,
+                },
+            )
+        if self._FILE_DISCOVERY_RE.search(query or ""):
+            return self._decision(
+                filters=incoming_filters,
+                state=state,
+                source="file_discovery",
+                status="file_discovery_no_safe_candidate",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                suppress_retrieval=True,
+                extra_trace={
+                    "file_discovery_requires_clarification": True,
+                    "file_candidates": [],
+                    "alias_candidates": [],
+                    "no_safe_file_candidate": True,
+                    "requires_retrieval_evidence": True,
+                    "missing_evidence_policy": "Missing Evidence",
                 },
             )
 

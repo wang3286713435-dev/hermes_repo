@@ -1,5 +1,13 @@
 # TODO
 
+## Phase 2.113a
+
+- 已完成 self-awareness review fix：fuzzy file-discovery guard 不再把普通内容检索中的“帮我找一下 / 找一下”误判为 `file_discovery_no_safe_candidate`。
+- 保留明确找候选文件路径：`C塔项目的招标要求文件你帮我找出来`、`帮我找 C塔项目相关文件`、`有哪些 C塔项目人力配置相关文件` 仍会 fail-closed 并要求用户确认候选文件。
+- 扩展 kernel self-awareness trigger：覆盖 `你可以帮我管理文件吗`、`你能管理公司文件吗`、`能不能管理文件`、`你怎么使用记忆库`。
+- 验证：py_compile 通过；session scope / structured citation / natural import runtime regression `102 passed`。
+- 下一步：Codex B review；通过后再交 Codex C / 测试机做 OpenWebUI / 8642 live validation。
+
 ## Phase 2.112d
 
 - 已完成 alias continuity owner-scope review fix：natural import continuity 不再按 alias 全局恢复，而是按 safe owner key + alias 恢复。
@@ -241,3 +249,11 @@
 4. 验证：targeted parser / flow / runtime tests `15 passed`；py_compile 通过；natural import / upload client / session scope regression `124 passed`。
 5. 本轮未执行真实 OpenWebUI / 8642 upload/import，未写 DB / facts / versions / OpenSearch / Qdrant，未 baseline。
 6. 下一步：Codex B review；通过后测试机复验 explicit requested alias import -> follow-up retrieval + citation。
+
+# Phase 2.113 Hermes Memory Self-Awareness / Kernel Activation
+
+1. 本轮完成最小 runtime fix：self-awareness / memory-kernel 能力说明、自然导入成功反馈、generated alias 可见性、fuzzy file discovery no-candidate fail-closed。
+2. 自然导入响应现在包含 Hermes_memory import status、安全 document/version id、chunk/index 状态、推荐 alias、后续提问建议与 Missing Evidence 边界。
+3. ContextBuilder 增加 Hermes Memory Kernel capability boundary，明确 import/catalog、alias/workspace refs、retrieval evidence/citations、低敏 continuity hints、raw path/content/secret 禁止和 DWG/RVT/BIM overclaim 边界。
+4. 验证：py_compile 通过；natural import runtime `14 passed`，structured citation context `18 passed`，session document scope `67 passed`。
+5. 下一步：Codex B review；通过后由 Codex C / 测试机跑 OpenWebUI / 8642 真实验收。

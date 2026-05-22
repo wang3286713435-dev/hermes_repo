@@ -61,14 +61,23 @@ def _runtime_diagnostics(flow_result: NaturalFileImportFlowResult) -> dict[str, 
 def render_natural_file_import_response(diagnostics: dict[str, Any]) -> str:
     alias_resolution = diagnostics.get("alias_resolution") or {}
     alias = alias_resolution.get("alias") if isinstance(alias_resolution, dict) else None
+    upload_succeeded = diagnostics.get("ingestion_status") == "upload_succeeded"
     lines = [
-        "文件我已经记下了。" if diagnostics.get("ingestion_status") == "upload_succeeded" else "Natural file import diagnostics:",
+        "文件我已经记下了。" if upload_succeeded else "Natural file import diagnostics:",
     ]
-    if diagnostics.get("ingestion_status") == "upload_succeeded" and alias:
+    if upload_succeeded and alias:
         lines.extend(
             [
                 f"别名我设定为：@{alias}",
                 "后续你可以用这个别名继续问我；我仍会通过 retrieval evidence 和 citation 回答文件内容。",
+                f"Hermes_memory import status: {diagnostics.get('ingestion_status')}",
+                f"safe_reference: document_id={diagnostics.get('document_id')}; version_id={diagnostics.get('version_id')}",
+                f"chunk/index status: chunk_count={diagnostics.get('chunk_count')}; indexed_count={diagnostics.get('indexed_count')}",
+                f"recommended_alias=@{alias}",
+                "建议后续这样问：围绕 @"
+                f"{alias} 总结重点；围绕 @{alias} 查找条款并给出 citation；对比 @{alias} 和另一份文件。",
+                "Evidence boundary: 导入诊断不是 retrieval evidence；回答文件内容仍必须依赖 retrieval evidence/citations。"
+                " 如果当前证据不足，输出 Missing Evidence，不从导入元数据、历史记忆或猜测中补答案。",
                 "",
                 "Natural file import diagnostics:",
             ]

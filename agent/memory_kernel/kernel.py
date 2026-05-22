@@ -75,6 +75,7 @@ class MemoryKernel:
         trace = dict(retrieval.trace or {})
         trace = self._with_context_governance_trace(trace, retrieval, scope_decision)
         trace = self._with_facts_context_trace(trace, scoped_request, retrieval, scope_decision)
+        trace = self._with_kernel_capability_trace(trace, scoped_request)
         retrieval = RetrievalOutput(
             items=retrieval.items,
             citations=citations,
@@ -110,6 +111,24 @@ class MemoryKernel:
                 **(retrieval.trace or {}),
             },
         )
+
+    _KERNEL_CAPABILITY_QUERY_RE = re.compile(
+        r"(?:(?:Hermes|你|你们|系统|智能体|agent).{0,20}"
+        r"(?:能做什么|有什么能力|怎么记|有没有记忆|记忆库|知识库|企业记忆|文件管理|"
+        r"怎么管理文件|管理公司文件|管理文件|能不能管理文件|证据|citation|引用|Missing Evidence)|"
+        r"(?:能不能管理文件|怎么使用记忆库|使用记忆库|管理公司文件))"
+    )
+
+    def _with_kernel_capability_trace(self, trace: dict, request: KernelRequest) -> dict:
+        enriched = dict(trace or {})
+        query = request.query or ""
+        if self._KERNEL_CAPABILITY_QUERY_RE.search(query):
+            enriched["kernel_capability_requested"] = True
+            enriched["facts_as_answer"] = False
+            enriched["transcript_as_fact"] = False
+            enriched["snapshot_as_answer"] = False
+            enriched["requires_retrieval_evidence"] = True
+        return enriched
 
     def finish_turn(self, request: KernelRequest, response: str, result: KernelResult) -> None:
         # TODO Phase 2: write retrieval/citation trace and safe memory writeback.
