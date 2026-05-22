@@ -15,7 +15,9 @@ _UNQUOTED_PATH_RE = re.compile(r"(?<!\S)(/[^\s，,。；;！？!?]+)")
 _TITLE_RE = re.compile(r"(?:标题|名称)\s*(?:叫|为|=|：|:)\s*(.+?)(?=[，,。；;\n]|$)")
 _DOCUMENT_TYPE_RE = re.compile(r"(?:document_type|文档类型)\s*(?:=|：|:)\s*([A-Za-z0-9_\-\u4e00-\u9fff]+)")
 _SOURCE_TYPE_RE = re.compile(r"(?:source_type|来源类型)\s*(?:=|：|:)\s*([A-Za-z0-9_\-]+)")
-_ALIAS_RE = re.compile(r"(?:绑定为|绑定成|设为|命名为|取名为|叫做|叫)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)")
+_ALIAS_RE = re.compile(
+    r"(?:绑定为|绑定成|设为|命名为|取名为|叫做|叫|别名(?:为|叫|设为)?|设定别名为|我想叫它)\s*@([A-Za-z0-9_\-\u4e00-\u9fff]+)"
+)
 _BULK_INTENT_RE = re.compile(r"(批量导入|整个目录|整个文件夹|递归|扫描\s*NAS|NAS|文件池|TB\s*级|BIM.*(?:批量|目录|文件池))", re.IGNORECASE)
 _DIRECTORY_INTENT_RE = re.compile(r"(目录|文件夹)")
 _SUPPORTED_EXTENSIONS = {

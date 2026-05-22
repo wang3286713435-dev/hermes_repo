@@ -232,3 +232,12 @@
 4. 验证：py_compile 通过；新增 targeted gateway tests `3 passed`；natural import / upload client / session scope regression `109 passed`。
 5. 本地完整 `tests/gateway/test_api_server.py` 仍因当前 `.venv` 缺 async pytest 插件 false-fail existing async tests；需 Codex B 在具备 async 插件环境复核。
 6. 下一步：Codex B review；通过后再由测试机 OpenWebUI / 8642 复验 import -> follow-up `@alias` retrieval + citation。
+
+# Phase 2.112h Explicit Natural Import Alias Preservation Fix
+
+1. 已修复 natural import 显式自然语言 alias 解析覆盖不足：`别名 @...`、`别名为 @...`、`别名叫 @...`、`别名设为 @...`、`设定别名为 @...`、`我想叫它 @...` 等会保留用户请求 alias。
+2. 用户显式 alias 继续优先于 generated alias；malformed alias 保持 `not_requested` / fail-closed，不生成伪请求。
+3. 已补 follow-up restore 测试，证明 import 时请求 `@建筑类数据样表` 后，漂移 session 的 follow-up `@建筑类数据样表` 可恢复 document/version scoped filters。
+4. 验证：targeted parser / flow / runtime tests `15 passed`；py_compile 通过；natural import / upload client / session scope regression `124 passed`。
+5. 本轮未执行真实 OpenWebUI / 8642 upload/import，未写 DB / facts / versions / OpenSearch / Qdrant，未 baseline。
+6. 下一步：Codex B review；通过后测试机复验 explicit requested alias import -> follow-up retrieval + citation。

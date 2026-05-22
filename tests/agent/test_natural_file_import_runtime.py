@@ -207,6 +207,40 @@ def test_run_agent_restores_import_alias_continuity_in_new_agent_instance(tmp_pa
     assert decision.filters["version_id"] == "ver-runtime"
 
 
+def test_run_agent_preserves_requested_natural_alias_for_followup_restore(tmp_path):
+    response = maybe_handle_natural_file_import(
+        "请上传 /tmp/系统生成名.xlsx 到企业记忆，别名设为 @建筑类数据样表",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+    assert response is not None
+    assert response.diagnostics["alias_resolution"]["alias"] == "建筑类数据样表"
+    assert response.diagnostics["alias_resolution"]["status"] == "alias_seeded"
+
+    agent = object.__new__(AIAgent)
+    agent.session_id = "api-natural-import-session"
+    agent._gateway_session_key = "gateway-chat-1"
+    agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    agent._memory_kernel.document_scope._storage_path = tmp_path / "scope.json"
+
+    agent._persist_natural_import_alias(response.diagnostics)
+    agent.session_id = "api-followup-drift-session"
+    agent._register_alias_continuity_owner()
+    decision = agent._memory_kernel.resolve_document_scope(
+        session_id="api-followup-drift-session",
+        query="围绕 @建筑类数据样表 总结文件内容，必须给出 citation",
+        filters={},
+    )
+
+    assert response.diagnostics["alias_resolution"]["alias"] == "建筑类数据样表"
+    assert response.diagnostics["alias_resolution"]["status"] == "alias_bound"
+    assert decision.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert decision.trace["alias_missing"] is False
+    assert decision.suppress_retrieval is False
+    assert decision.filters["document_id"] == "doc-runtime"
+    assert decision.filters["version_id"] == "ver-runtime"
+
+
 def test_run_agent_hydrates_natural_import_alias_from_conversation_history(tmp_path):
     agent = object.__new__(AIAgent)
     agent.session_id = "api-derived-followup-session"

@@ -129,6 +129,25 @@ def test_alias_requested_and_mocked_upload_success_seeds_session_alias():
     assert alias_resolution["resolved_version_id"] == "ver-1"
 
 
+def test_requested_alias_from_natural_phrase_overrides_generated_alias():
+    adapter = FakeUploadAdapter(_success_result())
+
+    result = run_natural_file_import_preflight(
+        "请上传 /tmp/系统生成名.xlsx 到企业记忆，别名为 @建筑类数据样表",
+        upload_adapter=adapter,
+        real_upload_enabled=True,
+    )
+
+    alias_resolution = result.diagnostics["alias_resolution"]
+    assert adapter.last_request is not None
+    assert adapter.last_request.alias == "建筑类数据样表"
+    assert alias_resolution["status"] == "alias_seeded"
+    assert alias_resolution["alias"] == "建筑类数据样表"
+    assert alias_resolution["alias_generated"] is False
+    assert alias_resolution["resolved_document_id"] == "doc-1"
+    assert alias_resolution["resolved_version_id"] == "ver-1"
+
+
 def test_mocked_upload_success_without_alias_generates_safe_session_alias():
     adapter = FakeUploadAdapter(_success_result())
 

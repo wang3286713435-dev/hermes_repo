@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agent.memory_kernel.natural_file_import import (
     build_natural_file_import_diagnostics,
     parse_natural_file_import,
@@ -37,6 +39,48 @@ def test_parse_alias_binding():
     assert request.trace["alias_requested"] is True
     assert request.trace["alias_resolution"]["status"] == "pending_upload"
     assert request.trace["alias_resolution"]["alias"] == "硬件清单"
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "绑定为 @建筑类数据样表",
+        "绑定成 @建筑类数据样表",
+        "命名为 @建筑类数据样表",
+        "取名为 @建筑类数据样表",
+        "别名 @建筑类数据样表",
+        "别名为 @建筑类数据样表",
+        "别名叫 @建筑类数据样表",
+        "别名设为 @建筑类数据样表",
+        "设定别名为 @建筑类数据样表",
+        "我想叫它 @建筑类数据样表",
+    ],
+)
+def test_parse_explicit_alias_phrases_preserves_requested_alias(phrase: str):
+    request = parse_natural_file_import(f"请上传 /tmp/demo.xlsx 到企业记忆，{phrase}")
+
+    assert request.detected is True
+    assert request.source_path == "/tmp/demo.xlsx"
+    assert request.alias == "建筑类数据样表"
+    assert request.trace["alias_requested"] is True
+    assert request.trace["alias_resolution"]["alias"] == "建筑类数据样表"
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "别名为 @",
+        "别名 @@@",
+        "设定别名为 @@@",
+    ],
+)
+def test_malformed_explicit_alias_is_not_requested(phrase: str):
+    request = parse_natural_file_import(f"请上传 /tmp/demo.xlsx 到企业记忆，{phrase}")
+
+    assert request.detected is True
+    assert request.alias is None
+    assert request.trace["alias_requested"] is False
+    assert request.trace["alias_resolution"]["status"] == "not_requested"
 
 
 def test_parse_document_type_and_source_type():
