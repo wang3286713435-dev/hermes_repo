@@ -223,3 +223,12 @@
 3. 无 stable owner 时仍 fail-closed，并在 alias-missing trace 输出 sanitized `stable_owner_missing`；不暴露 raw owner / token / path / secret / content。
 4. 验证通过：py_compile；API server owner bridge targeted tests `7 passed`；natural import / upload client / session scope regression `106 passed`。
 5. 下一步等待 Codex B review；通过后再做 selective runtime baseline 与测试机 OpenWebUI / 8642 验证。
+
+# Phase 2.112g Header-only Stable Owner Restore Fix
+
+1. 已修复 OpenWebUI / 8642 follow-up 只有 header-only `X-Hermes-Session-Id` 时 stable owner 缺失的问题。
+2. `X-Hermes-Session-Id` 已加入 gateway stable owner fallback headers；accepted body/session id 与 header-only follow-up 会生成同一 safe owner。
+3. 新增测试覆盖 header-only owner extraction、accepted/header-only owner equivalence、import alias continuity restore 后 `alias_resolved` / scoped filters / no `stable_owner_missing`。
+4. 验证：py_compile 通过；新增 targeted gateway tests `3 passed`；natural import / upload client / session scope regression `109 passed`。
+5. 本地完整 `tests/gateway/test_api_server.py` 仍因当前 `.venv` 缺 async pytest 插件 false-fail existing async tests；需 Codex B 在具备 async 插件环境复核。
+6. 下一步：Codex B review；通过后再由测试机 OpenWebUI / 8642 复验 import -> follow-up `@alias` retrieval + citation。

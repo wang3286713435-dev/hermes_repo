@@ -32,6 +32,11 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from agent.memory_kernel.session_document_scope import (
+    DocumentScopeDecision,
+    ResolvedDocument,
+    SessionDocumentScopeStore,
+)
 
 
 def test_chat_session_id_drifts_when_openwebui_sends_only_latest_user_message():
@@ -57,6 +62,88 @@ def test_gateway_session_key_prefers_accepted_hermes_session_header():
 
     assert gateway_session_key == "api_server:x-hermes-session-id:chat-123"
     assert source == "x-hermes-session-id"
+
+
+def test_gateway_session_key_accepts_header_only_hermes_session_id_as_stable_owner():
+    gateway_session_key, source = _gateway_session_key_from_headers(
+        {"X-Hermes-Session-Id": "chat-123"},
+        accepted_session_id=None,
+    )
+
+    assert gateway_session_key == "api_server:x-hermes-session-id:chat-123"
+    assert source == "x-hermes-session-id"
+
+
+def test_gateway_session_key_header_only_matches_accepted_session_owner():
+    accepted_key, accepted_source = _gateway_session_key_from_headers(
+        {"X-Hermes-Session-Id": "chat-123"},
+        accepted_session_id="chat-123",
+    )
+    header_only_key, header_only_source = _gateway_session_key_from_headers(
+        {"X-Hermes-Session-Id": "chat-123"},
+        accepted_session_id=None,
+    )
+
+    assert header_only_key == accepted_key
+    assert header_only_source == accepted_source == "x-hermes-session-id"
+
+
+def test_header_only_hermes_session_owner_restores_import_alias_continuity():
+    import_owner, _ = _gateway_session_key_from_headers(
+        {"X-Hermes-Session-Id": "chat-123"},
+        accepted_session_id="chat-123",
+    )
+    followup_owner, _ = _gateway_session_key_from_headers(
+        {"X-Hermes-Session-Id": "chat-123"},
+        accepted_session_id=None,
+    )
+    store = SessionDocumentScopeStore()
+    store.set_continuity_owner(
+        session_id="api-import-turn",
+        owner_value=import_owner,
+        owner_source="gateway_session_key",
+    )
+    store.finalize_pending_alias_binding(
+        session_id="api-import-turn",
+        decision=DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": "建筑类数据样表",
+                "alias_continuity_source": "natural_import_success",
+            },
+        ),
+        documents=[
+            ResolvedDocument(
+                document_id="doc-imported",
+                title="建筑类数据样表.xlsx",
+                version_id="ver-imported",
+                source_name="建筑类数据样表.xlsx",
+            )
+        ],
+    )
+    store.set_continuity_owner(
+        session_id="api-followup-drifted",
+        owner_value=followup_owner,
+        owner_source="gateway_session_key",
+    )
+
+    decision = store.resolve(
+        session_id="api-followup-drifted",
+        query="围绕 @建筑类数据样表 总结这个文件，必须给出 citation",
+        filters={},
+        resolver=lambda _titles, _filters: [],
+    )
+
+    assert decision.suppress_retrieval is False
+    assert decision.filters["document_id"] == "doc-imported"
+    assert decision.filters["version_id"] == "ver-imported"
+    assert decision.trace["alias_resolution"]["status"] == "alias_resolved"
+    assert decision.trace["alias_resolution"]["alias_missing"] is False
+    assert decision.trace["alias_continuity_status"] == "restored"
+    assert decision.trace["alias_resolution"]["alias_continuity_status"] == "restored"
+    assert not decision.trace.get("stable_owner_missing")
+    assert not decision.trace["alias_resolution"].get("stable_owner_missing")
 
 
 def test_gateway_session_key_accepts_whitelisted_openwebui_conversation_header():

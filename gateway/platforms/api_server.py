@@ -521,6 +521,7 @@ def _derive_chat_session_id(
 
 
 _GATEWAY_STABLE_OWNER_HEADERS = (
+    "X-Hermes-Session-Id",
     "X-OpenWebUI-Conversation-Id",
     "X-OpenWebUI-Chat-Id",
     "X-Conversation-Id",
