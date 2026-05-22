@@ -1203,6 +1203,50 @@ def test_session_file_discovery_returns_safe_alias_candidates_without_retrieval(
     assert "document_id" not in decision.filters
 
 
+def test_session_file_discovery_matches_workspace_context_metadata():
+    store = SessionDocumentScopeStore()
+    store._session_aliases("s1")["C塔人力成本测算表"] = FileAliasBinding(
+        alias="C塔人力成本测算表",
+        document_id="doc-cost",
+        title="C塔项目人力配置及成本测算表0506.xlsx",
+        version_id="v-cost",
+        source_name="C塔项目人力配置及成本测算表0506.xlsx",
+        workspace_id="ws-ctower",
+        workspace_name="C塔项目",
+        workspace_type="project",
+        document_category="人力配置 / 成本测算",
+        workspace_confidence="high",
+        workspace_needs_user_confirmation=False,
+    )
+    store._session_aliases("s1")["C塔主标书"] = FileAliasBinding(
+        alias="C塔主标书",
+        document_id="doc-tender",
+        title="C塔项目招标文件.docx",
+        version_id="v-tender",
+        source_name="C塔项目招标文件.docx",
+        workspace_id="ws-ctower",
+        workspace_name="C塔项目",
+        workspace_type="project",
+        document_category="招标资料",
+        workspace_confidence="high",
+        workspace_needs_user_confirmation=False,
+    )
+
+    decision = store.resolve(
+        session_id="s1",
+        query="帮我找 C塔项目的人力成本表",
+        filters={},
+        resolver=lambda titles, filters: [],
+    )
+
+    assert decision.trace["scope_resolution_status"] == "file_discovery_candidates"
+    assert decision.suppress_retrieval is True
+    assert decision.trace["file_discovery_requires_clarification"] is True
+    assert decision.trace["file_candidates"][0]["alias"] == "C塔人力成本测算表"
+    assert decision.trace["file_candidates"][0]["workspace_name"] == "C塔项目"
+    assert decision.trace["file_candidates"][0]["document_category"] == "人力配置 / 成本测算"
+
+
 def test_session_file_discovery_no_candidate_suppresses_retrieval_with_missing_evidence_boundary():
     store = SessionDocumentScopeStore()
 

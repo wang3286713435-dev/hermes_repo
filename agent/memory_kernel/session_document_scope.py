@@ -38,6 +38,12 @@ class FileAliasBinding:
     title: str
     version_id: str | None = None
     source_name: str | None = None
+    workspace_id: str | None = None
+    workspace_name: str | None = None
+    workspace_type: str | None = None
+    document_category: str | None = None
+    workspace_confidence: str | None = None
+    workspace_needs_user_confirmation: bool | None = None
     alias_scope: str = "session"
     scope_source: str | None = None
     updated_at: str | None = None
@@ -85,7 +91,8 @@ class SessionDocumentScopeStore:
     _DIFFERENCE_RE = re.compile(r"(区别|差异|不同)")
     _FILE_DISCOVERY_RE = re.compile(
         r"(哪个文件|哪份文件|那份文件|有哪些[^，。！？\n]{0,24}文件|相关文件|候选文件|"
-        r"(?:文件|文档|资料|材料)[^，。！？\n]{0,24}找出来)"
+        r"(?:文件|文档|资料|材料)[^，。！？\n]{0,24}找出来|"
+        r"(?:帮我)?找[^，。！？\n]{0,40}(?:文件|文档|资料|材料|表格|表|清单)(?![里中内的]))"
     )
     _PROJECT_RE = re.compile(r"(?:项目|project)\s*[：:]\s*(.+?)(?=\s*(?:任务|task)\s*[：:]|[，。！？\n]|$)", re.IGNORECASE)
     _TASK_RE = re.compile(r"(?:任务|task)\s*[：:]\s*(.+?)(?=[，。！？\n]|$)", re.IGNORECASE)
@@ -499,6 +506,12 @@ class SessionDocumentScopeStore:
                 "version_id": binding.version_id,
                 "title": binding.title,
                 "source_name": binding.source_name,
+                "workspace_id": binding.workspace_id,
+                "workspace_name": binding.workspace_name,
+                "workspace_type": binding.workspace_type,
+                "document_category": binding.document_category,
+                "workspace_confidence": binding.workspace_confidence,
+                "workspace_needs_user_confirmation": binding.workspace_needs_user_confirmation,
                 "match_reason": "session_alias_fuzzy_match" if score > 0 else "single_session_alias_candidate",
             }
             for score, alias, binding in candidates[:5]
@@ -509,7 +522,7 @@ class SessionDocumentScopeStore:
         raw_tokens = [token for token in normalized.split(" ") if len(token) >= 2]
         compact = re.sub(r"\s+", "", normalized)
         tokens = list(raw_tokens)
-        for marker in ("项目", "招标", "要求", "文件", "资料", "清单", "会议", "纪要", "标准"):
+        for marker in ("项目", "招标", "要求", "文件", "资料", "清单", "会议", "纪要", "标准", "人力", "成本", "测算", "表格", "表"):
             if marker in compact:
                 tokens.append(marker)
         return self._unique(tokens)
@@ -521,6 +534,11 @@ class SessionDocumentScopeStore:
                 alias,
                 binding.title,
                 binding.source_name,
+                binding.workspace_id,
+                binding.workspace_name,
+                binding.workspace_type,
+                binding.document_category,
+                binding.workspace_confidence,
                 binding.document_id,
                 binding.version_id,
             )
@@ -633,6 +651,7 @@ class SessionDocumentScopeStore:
             title=document.title,
             version_id=document.version_id,
             source_name=document.source_name,
+            **self._workspace_binding_kwargs({}),
             alias_scope="session",
             scope_source=source,
             updated_at=self._now(),
@@ -1000,6 +1019,10 @@ class SessionDocumentScopeStore:
             trace["alias_source_name"] = binding.source_name
             trace["alias_resolution"]["alias_version_id"] = binding.version_id
             trace["alias_resolution"]["alias_source_name"] = binding.source_name
+            workspace_context = self._workspace_context_from_binding(binding)
+            if workspace_context:
+                trace["workspace_context"] = workspace_context
+                trace["alias_resolution"]["workspace_context"] = workspace_context
         if compare_aliases is not None:
             trace["compare_aliases"] = compare_aliases
             trace["alias_resolution"]["compare_aliases"] = compare_aliases
@@ -1089,6 +1112,7 @@ class SessionDocumentScopeStore:
             title=document.title,
             version_id=document.version_id,
             source_name=document.source_name,
+            **self._workspace_binding_kwargs(decision.trace),
             alias_scope="session",
             scope_source=(
                 "alias_bind_title_retrieval"
@@ -1181,6 +1205,12 @@ class SessionDocumentScopeStore:
             title=binding.title,
             version_id=binding.version_id,
             source_name=binding.source_name,
+            workspace_id=binding.workspace_id,
+            workspace_name=binding.workspace_name,
+            workspace_type=binding.workspace_type,
+            document_category=binding.document_category,
+            workspace_confidence=binding.workspace_confidence,
+            workspace_needs_user_confirmation=binding.workspace_needs_user_confirmation,
             alias_scope="continuity",
             scope_source="natural_import_success",
             updated_at=self._now(),
@@ -1231,8 +1261,51 @@ class SessionDocumentScopeStore:
             "version_id": binding.version_id,
             "title": binding.title,
             "source_name": binding.source_name,
+            "workspace_id": binding.workspace_id,
+            "workspace_name": binding.workspace_name,
+            "workspace_type": binding.workspace_type,
+            "document_category": binding.document_category,
+            "workspace_confidence": binding.workspace_confidence,
+            "workspace_needs_user_confirmation": binding.workspace_needs_user_confirmation,
             "match_reason": "alias_continuity_candidate",
             "alias_continuity_owner_source": binding.continuity_owner_source,
+        }
+
+    def _workspace_binding_kwargs(self, trace: dict[str, Any]) -> dict[str, Any]:
+        workspace_context = trace.get("workspace_context") if isinstance(trace, dict) else None
+        if not isinstance(workspace_context, dict):
+            return {}
+        return {
+            "workspace_id": str(workspace_context["workspace_id"]) if workspace_context.get("workspace_id") else None,
+            "workspace_name": str(workspace_context["workspace_name"]) if workspace_context.get("workspace_name") else None,
+            "workspace_type": str(workspace_context["workspace_type"]) if workspace_context.get("workspace_type") else None,
+            "document_category": str(workspace_context["document_category"]) if workspace_context.get("document_category") else None,
+            "workspace_confidence": str(workspace_context["confidence"]) if workspace_context.get("confidence") else None,
+            "workspace_needs_user_confirmation": (
+                bool(workspace_context["needs_user_confirmation"])
+                if workspace_context.get("needs_user_confirmation") is not None
+                else None
+            ),
+        }
+
+    def _workspace_context_from_binding(self, binding: FileAliasBinding) -> dict[str, Any] | None:
+        if not any(
+            [
+                binding.workspace_id,
+                binding.workspace_name,
+                binding.workspace_type,
+                binding.document_category,
+                binding.workspace_confidence,
+            ]
+        ):
+            return None
+        return {
+            "workspace_id": binding.workspace_id,
+            "workspace_name": binding.workspace_name,
+            "workspace_type": binding.workspace_type,
+            "document_category": binding.document_category,
+            "confidence": binding.workspace_confidence,
+            "needs_user_confirmation": binding.workspace_needs_user_confirmation,
         }
 
     def _state_with_context_hints(
@@ -1439,6 +1512,16 @@ class SessionDocumentScopeStore:
                         title=str(binding.get("title") or binding["document_id"]),
                         version_id=str(binding["version_id"]) if binding.get("version_id") else None,
                         source_name=str(binding["source_name"]) if binding.get("source_name") else None,
+                        workspace_id=str(binding["workspace_id"]) if binding.get("workspace_id") else None,
+                        workspace_name=str(binding["workspace_name"]) if binding.get("workspace_name") else None,
+                        workspace_type=str(binding["workspace_type"]) if binding.get("workspace_type") else None,
+                        document_category=str(binding["document_category"]) if binding.get("document_category") else None,
+                        workspace_confidence=str(binding["workspace_confidence"]) if binding.get("workspace_confidence") else None,
+                        workspace_needs_user_confirmation=(
+                            bool(binding["workspace_needs_user_confirmation"])
+                            if binding.get("workspace_needs_user_confirmation") is not None
+                            else None
+                        ),
                         alias_scope=str(binding.get("alias_scope") or "session"),
                         scope_source=str(binding["scope_source"]) if binding.get("scope_source") else None,
                         updated_at=str(binding["updated_at"]) if binding.get("updated_at") else None,
@@ -1474,6 +1557,16 @@ class SessionDocumentScopeStore:
                             title=str(binding.get("title") or binding["document_id"]),
                             version_id=str(binding["version_id"]) if binding.get("version_id") else None,
                             source_name=str(binding["source_name"]) if binding.get("source_name") else None,
+                            workspace_id=str(binding["workspace_id"]) if binding.get("workspace_id") else None,
+                            workspace_name=str(binding["workspace_name"]) if binding.get("workspace_name") else None,
+                            workspace_type=str(binding["workspace_type"]) if binding.get("workspace_type") else None,
+                            document_category=str(binding["document_category"]) if binding.get("document_category") else None,
+                            workspace_confidence=str(binding["workspace_confidence"]) if binding.get("workspace_confidence") else None,
+                            workspace_needs_user_confirmation=(
+                                bool(binding["workspace_needs_user_confirmation"])
+                                if binding.get("workspace_needs_user_confirmation") is not None
+                                else None
+                            ),
                             alias_scope="continuity",
                             scope_source=str(binding.get("scope_source") or "natural_import_success"),
                             updated_at=str(binding["updated_at"]) if binding.get("updated_at") else None,

@@ -165,6 +165,63 @@ def test_mocked_upload_success_without_alias_generates_safe_session_alias():
     assert alias_resolution["resolved_version_id"] == "ver-1"
 
 
+def test_import_without_alias_or_project_context_infers_workspace_and_alias():
+    adapter = FakeUploadAdapter(_success_result())
+
+    result = run_natural_file_import_preflight(
+        "帮我导入这个文件：/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx。",
+        upload_adapter=adapter,
+        real_upload_enabled=True,
+    )
+
+    alias_resolution = result.diagnostics["alias_resolution"]
+    workspace_context = result.diagnostics["workspace_context"]
+
+    assert alias_resolution["status"] == "alias_seeded"
+    assert alias_resolution["alias"] == "C塔人力成本测算表"
+    assert alias_resolution["alias_generated"] is True
+    assert result.diagnostics["suggested_alias"] == "@C塔人力成本测算表"
+    assert result.diagnostics["alias_status"] == "alias_seeded"
+    assert workspace_context["workspace_name"] == "C塔项目"
+    assert workspace_context["workspace_type"] == "project"
+    assert workspace_context["document_category"] == "人力配置 / 成本测算"
+    assert workspace_context["confidence"] == "high"
+    assert workspace_context["needs_user_confirmation"] is False
+
+
+def test_explicit_alias_overrides_workspace_generated_alias():
+    adapter = FakeUploadAdapter(_success_result())
+
+    result = run_natural_file_import_preflight(
+        "帮我导入这个文件：/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx，别名为 @成本表",
+        upload_adapter=adapter,
+        real_upload_enabled=True,
+    )
+
+    assert result.diagnostics["alias_resolution"]["alias"] == "成本表"
+    assert result.diagnostics["alias_resolution"]["alias_generated"] is False
+    assert result.diagnostics["suggested_alias"] == "@成本表"
+    assert result.diagnostics["workspace_context"]["workspace_name"] == "C塔项目"
+
+
+def test_ambiguous_workspace_context_requests_confirmation_without_overclaim():
+    adapter = FakeUploadAdapter(_success_result())
+
+    result = run_natural_file_import_preflight(
+        "帮我导入这个文件：/Users/hermes/import_samples/资料表.xlsx。",
+        upload_adapter=adapter,
+        real_upload_enabled=True,
+    )
+
+    workspace_context = result.diagnostics["workspace_context"]
+
+    assert workspace_context["workspace_name"] == "unknown"
+    assert workspace_context["workspace_type"] == "unknown"
+    assert workspace_context["confidence"] == "low"
+    assert workspace_context["needs_user_confirmation"] is True
+    assert result.diagnostics["workspace_context_as_retrieval_evidence"] is False
+
+
 def test_alias_requested_and_upload_failed_does_not_bind_alias():
     adapter = FakeUploadAdapter(
         NaturalFileUploadResult(

@@ -2950,6 +2950,7 @@ class AIAgent:
                 "scope_resolution_status": "alias_bind_pending_current_retrieval",
                 "alias": alias,
                 "alias_continuity_source": "natural_import_success",
+                "workspace_context": diagnostics.get("workspace_context"),
             },
         )
         continuity_owner = self._register_alias_continuity_owner()
@@ -2971,6 +2972,7 @@ class AIAgent:
             updated_decision.trace.get("scope_resolution_status") == "alias_bound"
         )
         if diagnostics["alias_persisted"]:
+            diagnostics["alias_status"] = "alias_bound"
             alias_trace = updated_decision.trace.get("alias_resolution")
             if isinstance(alias_trace, dict):
                 persisted_alias_resolution = dict(alias_trace)

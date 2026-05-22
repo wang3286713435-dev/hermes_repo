@@ -1,5 +1,7 @@
 # DEV_LOG
 
+- [Phase 2.115] Implemented workspace context inference / auto alias / fuzzy file discovery runtime candidate. Natural import can infer safe workspace metadata from filename/folder/query, generate `@C塔人力成本测算表` style aliases, persist workspace metadata on session alias bindings, and discover files through alias/workspace/category candidates. Import response now shows workspace / alias diagnostics while hiding raw paths and keeping diagnostics non-evidence. Verification: `git diff --check` passed; py_compile passed; natural import / runtime / session scope regression `129 passed`. No real OpenWebUI / 8642 upload/import run in this turn.
+
 - [Phase 2.114a] 修复 Phase 2.114 final user-flow acceptance 暴露的 natural import path parser blocker：未加引号路径现在可从中文全角冒号后提取，可保留中文路径、目录空格，并会裁掉中文句号；多路径仍 fail-closed，普通路径查看 / 总结不误触发 import。py_compile 通过，natural import parser / flow / runtime tests `54 passed`。未执行真实 OpenWebUI / 8642 import，未上传文件，未写 DB / facts / versions / OpenSearch / Qdrant。
 
 - [Phase 2.113a] 修复 Codex B review 指出的 fuzzy file-discovery regression：`找一下 / 帮我找` 只有在明确询问候选文件时才 suppress ordinary retrieval，`工程地点 / 工期要求 / 付款比例 / 表内数量` 等内容查询不再被转成 `file_discovery_no_safe_candidate`。同时补宽 self-awareness trigger，覆盖“你可以帮我管理文件吗 / 你能管理公司文件吗 / 能不能管理文件 / 你怎么使用记忆库”。py_compile 通过，session scope / structured citation / natural import runtime regression `102 passed`；未跑 OpenWebUI / 8642 live smoke，未上传文件，未写 DB / facts / versions / OpenSearch / Qdrant。

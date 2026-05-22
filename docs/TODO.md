@@ -264,3 +264,11 @@
 3. ContextBuilder 增加 Hermes Memory Kernel capability boundary，明确 import/catalog、alias/workspace refs、retrieval evidence/citations、低敏 continuity hints、raw path/content/secret 禁止和 DWG/RVT/BIM overclaim 边界。
 4. 验证：py_compile 通过；natural import runtime `14 passed`，structured citation context `18 passed`，session document scope `67 passed`。
 5. 下一步：Codex B review；通过后由 Codex C / 测试机跑 OpenWebUI / 8642 真实验收。
+# Phase 2.115 Workspace Context / Auto Alias Runtime Candidate
+
+1. Natural import now infers safe `workspace_context` when the user provides only an authorized file path and no `PROJECT_CONTEXT`.
+2. Generated alias flow now supports C塔 human-cost style files, e.g. `@C塔人力成本测算表`; explicit alias remains authoritative.
+3. Session alias registry persists workspace metadata and supports fuzzy discovery over safe alias / workspace / category text.
+4. Import success response renders workspace / alias diagnostics, hides raw path, and marks diagnostics as non-evidence.
+5. Verification: `git diff --check` passed; py_compile passed; natural import / runtime / session scope regression `129 passed`.
+6. Next: Codex B review and Codex C / test-machine validation; do not declare Phase 2.115 closed before real OpenWebUI / 8642 validation.

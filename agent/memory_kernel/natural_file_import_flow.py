@@ -123,6 +123,8 @@ def run_natural_file_import_preflight(
         }
     )
     diagnostics["alias_resolution"] = _alias_seeded(request, upload_result)
+    diagnostics["suggested_alias"] = f"@{diagnostics['alias_resolution']['alias']}"
+    diagnostics["alias_status"] = "alias_seeded"
 
     return NaturalFileImportFlowResult(
         intercepted=True,
@@ -152,6 +154,8 @@ def _base_flow_diagnostics(request: NaturalFileImportRequest) -> dict[str, Any]:
             "transcript_as_fact": False,
             "requires_retrieval_evidence": True,
             "third_document_contamination": False,
+            "suggested_alias": _suggested_alias(request),
+            "alias_status": "pending_upload" if request.alias else "alias_suggested",
         }
     )
     return diagnostics
@@ -192,11 +196,28 @@ def _alias_seeded(
 
 
 def _generated_safe_alias(request: NaturalFileImportRequest) -> str:
+    workspace = request.workspace_context or {}
+    workspace_name = str(workspace.get("workspace_name") or "")
+    category = str(workspace.get("document_category") or "")
+    if workspace_name and workspace_name != "unknown" and category == "人力配置 / 成本测算":
+        project_prefix = re.sub(r"项目$", "", workspace_name)
+        raw = f"{project_prefix}人力成本测算表"
+        alias = re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fff]+", "", raw)
+        return alias[:24] or "导入文件"
+
     source_name = PurePosixPath(request.source_path or "").name
     stem = PurePosixPath(source_name).stem if source_name else ""
+    stem = re.sub(r"[_\-\s]*(?:20\d{2}[01]\d[0-3]\d|20\d{2}[-._]?\d{1,2}[-._]?\d{1,2}|\d{4,})$", "", stem)
     raw = request.title or stem or "导入文件"
     alias = re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fff]+", "", raw)
     return alias[:24] or "导入文件"
+
+
+def _suggested_alias(request: NaturalFileImportRequest) -> str | None:
+    if not request.detected or not request.source_path:
+        return f"@{request.alias}" if request.alias else None
+    alias = request.alias or _generated_safe_alias(request)
+    return f"@{alias}" if alias else None
 
 
 def _missing_success_field(upload_result: NaturalFileUploadResult) -> str | None:

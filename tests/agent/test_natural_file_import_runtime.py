@@ -118,6 +118,26 @@ def test_success_response_uses_generated_safe_alias_without_exposing_raw_path():
     assert "/Users/example/private" not in response.final_response
 
 
+def test_success_response_renders_workspace_context_and_keeps_raw_path_hidden():
+    response = maybe_handle_natural_file_import(
+        "帮我导入这个文件：/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx。",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    rendered = response.final_response
+
+    assert "workspace_context:" in rendered
+    assert "workspace_name: C塔项目" in rendered
+    assert "workspace_type: project" in rendered
+    assert "document_category: 人力配置 / 成本测算" in rendered
+    assert 'suggested_alias: "@C塔人力成本测算表"' in rendered
+    assert "alias_status: alias_seeded" in rendered
+    assert "workspace_context_as_retrieval_evidence=false" in rendered
+    assert "/Users/hermes/import_samples" not in rendered
+
+
 def test_render_success_response_uses_persisted_alias_bound_status():
     diagnostics = {
         "natural_import_detected": True,
@@ -148,6 +168,17 @@ def test_render_success_response_uses_persisted_alias_bound_status():
         "transcript_as_fact": False,
         "requires_retrieval_evidence": True,
         "third_document_contamination": False,
+        "workspace_context": {
+            "workspace_id": "ws-demo",
+            "workspace_name": "测试项目",
+            "workspace_type": "project",
+            "document_category": "测试资料",
+            "confidence": "medium",
+            "needs_user_confirmation": True,
+        },
+        "suggested_alias": "@测试文件",
+        "alias_status": "alias_bound",
+        "workspace_context_as_retrieval_evidence": False,
     }
 
     response = render_natural_file_import_response(diagnostics)
@@ -276,6 +307,38 @@ def test_run_agent_preserves_requested_natural_alias_for_followup_restore(tmp_pa
     assert decision.suppress_retrieval is False
     assert decision.filters["document_id"] == "doc-runtime"
     assert decision.filters["version_id"] == "ver-runtime"
+
+
+def test_run_agent_persists_generated_alias_with_workspace_for_fuzzy_discovery(tmp_path):
+    response = maybe_handle_natural_file_import(
+        "帮我导入这个文件：/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx。",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+    assert response is not None
+
+    agent = object.__new__(AIAgent)
+    agent.session_id = "api-natural-import-session"
+    agent._gateway_session_key = "gateway-chat-ctower"
+    agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    agent._memory_kernel.document_scope._storage_path = tmp_path / "scope.json"
+
+    agent._persist_natural_import_alias(response.diagnostics)
+    decision = agent._memory_kernel.resolve_document_scope(
+        session_id="api-natural-import-session",
+        query="帮我找 C塔项目的人力成本表",
+        filters={},
+    )
+
+    assert response.diagnostics["alias_resolution"]["status"] == "alias_bound"
+    assert response.diagnostics["alias_resolution"]["alias"] == "C塔人力成本测算表"
+    assert response.diagnostics["alias_status"] == "alias_bound"
+    assert decision.trace["scope_resolution_status"] == "file_discovery_candidates"
+    assert decision.suppress_retrieval is True
+    assert decision.trace["file_candidates"][0]["alias"] == "C塔人力成本测算表"
+    assert decision.trace["file_candidates"][0]["workspace_name"] == "C塔项目"
+    assert decision.trace["file_candidates"][0]["document_category"] == "人力配置 / 成本测算"
+    assert "document_id" not in decision.filters
 
 
 def test_run_agent_hydrates_natural_import_alias_from_conversation_history(tmp_path):
