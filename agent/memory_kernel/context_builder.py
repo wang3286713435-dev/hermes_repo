@@ -458,6 +458,10 @@ class ContextBuilder:
         alias_helper = self._file_steward_alias_helper(trace)
         if alias_helper:
             helpers.append(alias_helper)
+        else:
+            discovery_helper = self._file_steward_file_discovery_helper(trace)
+            if discovery_helper:
+                helpers.append(discovery_helper)
 
         active_helper = self._file_steward_active_document_helper(trace)
         if active_helper:
@@ -492,6 +496,21 @@ class ContextBuilder:
             candidates=self._file_steward_candidates(trace),
             active_document=self._file_steward_active_document_hint(trace),
             failed_reason=str(alias_resolution.get("status") or trace.get("scope_resolution_status") or "alias_missing"),
+        )
+
+    def _file_steward_file_discovery_helper(self, trace: dict) -> dict[str, Any] | None:
+        candidates = self._file_steward_candidates(trace)
+        if not candidates:
+            return None
+        scope_status = str(trace.get("scope_resolution_status") or trace.get("file_discovery_status") or "")
+        requires_clarification = bool(trace.get("file_discovery_requires_clarification"))
+        if scope_status not in {"file_discovery_candidates", "multiple_file_candidates", "single_file_candidate"} and not requires_clarification:
+            return None
+        return build_alias_failure_helper(
+            alias=str(trace.get("alias") or "候选文件"),
+            candidates=candidates,
+            active_document=self._file_steward_active_document_hint(trace),
+            failed_reason=scope_status or "file_discovery_candidates",
         )
 
     def _file_steward_active_document_helper(self, trace: dict) -> dict[str, Any] | None:
@@ -545,6 +564,9 @@ class ContextBuilder:
                     title=str(candidate.get("title") or candidate.get("source_name") or candidate.get("document_id")),
                     source_name=self._optional_str(candidate.get("source_name")),
                     source_type=self._optional_str(candidate.get("source_type")),
+                    alias=self._optional_str(candidate.get("alias")),
+                    workspace_name=self._optional_str(candidate.get("workspace_name")),
+                    document_category=self._optional_str(candidate.get("document_category")),
                     match_reason=self._optional_str(candidate.get("match_reason") or candidate.get("reason")),
                 )
             )
@@ -589,11 +611,13 @@ class ContextBuilder:
             for candidate in helper.get("candidates") or []:
                 if not isinstance(candidate, dict):
                     continue
+                alias = candidate.get("alias")
+                workspace_name = candidate.get("workspace_name") or candidate.get("title") or "待确认工作区"
+                category = candidate.get("document_category") or "待确认分类"
+                visible_name = f"@{alias}" if alias else str(candidate.get("title") or "候选文件")
                 lines.append(
-                    "file_candidate: "
-                    f"document_id={candidate.get('document_id')}; version_id={candidate.get('version_id')}; "
-                    f"title={candidate.get('title')}; source_name={candidate.get('source_name')}; "
-                    f"source_type={candidate.get('source_type')}; match_reason={candidate.get('match_reason')}"
+                    f"file_candidate: {visible_name} — 工作区：{workspace_name} / {category}; "
+                    f"match_reason={candidate.get('match_reason')}; technical_ids_hidden=true"
                 )
             active_document = helper.get("active_document")
             if isinstance(active_document, dict) and active_document:

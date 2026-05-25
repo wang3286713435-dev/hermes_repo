@@ -78,7 +78,7 @@ def test_fake_adapter_success_returns_upload_fields_and_alias_seeded():
     assert response.diagnostics["alias_resolution"]["resolved_document_id"] == "doc-runtime"
     assert response.diagnostics["alias_resolution"]["resolved_version_id"] == "ver-runtime"
     assert "文件我已经记下了" in response.final_response
-    assert "别名我设定为：@测试文件" in response.final_response
+    assert "别名：@测试文件" in response.final_response
 
 
 def test_success_response_explains_import_status_followups_and_evidence_boundary():
@@ -91,16 +91,15 @@ def test_success_response_explains_import_status_followups_and_evidence_boundary
     assert response is not None
     rendered = response.final_response
 
-    assert "Hermes_memory import status: upload_succeeded" in rendered
-    assert "document_id=doc-runtime" in rendered
-    assert "version_id=ver-runtime" in rendered
-    assert "chunk_count=4" in rendered
-    assert "indexed_count=4" in rendered
-    assert "建议后续这样问" in rendered
-    assert "围绕 @测试文件" in rendered
-    assert "requires_retrieval_evidence=true" in rendered
-    assert "Missing Evidence" in rendered
-    assert "导入诊断不是 retrieval evidence" in rendered
+    assert "Natural file import diagnostics:" not in rendered
+    assert "document_id=doc-runtime" not in rendered
+    assert "version_id=ver-runtime" not in rendered
+    assert "chunk_count=4" not in rendered
+    assert "indexed_count=4" not in rendered
+    assert "后续你可以直接问" in rendered
+    assert "@测试文件 这份文件有哪些重点？" in rendered
+    assert "工作区和别名只是定位信息" in rendered
+    assert "retrieval evidence 和 citation" in rendered
 
 
 def test_success_response_uses_generated_safe_alias_without_exposing_raw_path():
@@ -113,8 +112,8 @@ def test_success_response_uses_generated_safe_alias_without_exposing_raw_path():
     assert response is not None
     assert response.diagnostics["alias_resolution"]["alias_generated"] is True
     assert response.diagnostics["alias_resolution"]["alias"] == "建筑类数据样表"
-    assert "别名我设定为：@建筑类数据样表" in response.final_response
-    assert "recommended_alias=@建筑类数据样表" in response.final_response
+    assert "别名：@建筑类数据样表" in response.final_response
+    assert "recommended_alias=@建筑类数据样表" not in response.final_response
     assert "/Users/example/private" not in response.final_response
 
 
@@ -128,13 +127,15 @@ def test_success_response_renders_workspace_context_and_keeps_raw_path_hidden():
     assert response is not None
     rendered = response.final_response
 
-    assert "workspace_context:" in rendered
-    assert "workspace_name: C塔项目" in rendered
-    assert "workspace_type: project" in rendered
-    assert "document_category: 人力配置 / 成本测算" in rendered
-    assert 'suggested_alias: "@C塔人力成本测算表"' in rendered
-    assert "alias_status: alias_seeded" in rendered
-    assert "workspace_context_as_retrieval_evidence=false" in rendered
+    assert "Natural file import diagnostics:" not in rendered
+    assert "工作区：C塔项目" in rendered
+    assert "分类：人力配置 / 成本测算" in rendered
+    assert "别名：@C塔人力成本测算表" in rendered
+    assert "帮我找 C塔项目的人力成本表" in rendered
+    assert "workspace_id" not in rendered
+    assert "document_id" not in rendered
+    assert "version_id" not in rendered
+    assert "chunk_count" not in rendered
     assert "/Users/hermes/import_samples" not in rendered
 
 
@@ -181,7 +182,7 @@ def test_render_success_response_uses_persisted_alias_bound_status():
         "workspace_context_as_retrieval_evidence": False,
     }
 
-    response = render_natural_file_import_response(diagnostics)
+    response = render_natural_file_import_response(diagnostics, include_diagnostics=True)
 
     assert "别名我设定为：@测试文件" in response
     assert '"status": "alias_bound"' in response
@@ -190,6 +191,21 @@ def test_render_success_response_uses_persisted_alias_bound_status():
     assert "api_session_key_source=api_derived_session_id" in response
     assert "history_message_count=0" in response
     assert "retrieval_evidence_document_ids=[]" in response
+
+
+def test_default_success_response_preserves_diagnostics_on_response_object_not_user_text():
+    response = maybe_handle_natural_file_import(
+        "帮我导入这个文件：/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx。",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    assert response.diagnostics["document_id"] == "doc-runtime"
+    assert response.diagnostics["version_id"] == "ver-runtime"
+    assert response.diagnostics["chunk_count"] == 4
+    assert response.diagnostics["workspace_context"]["workspace_name"] == "C塔项目"
+    assert "Natural file import diagnostics:" not in response.final_response
 
 
 def test_run_agent_persists_natural_import_alias_as_bound_and_continuity(tmp_path):
@@ -371,7 +387,8 @@ def test_run_agent_hydrates_natural_import_alias_from_conversation_history(tmp_p
             "transcript_as_fact": False,
             "requires_retrieval_evidence": True,
             "third_document_contamination": False,
-        }
+        },
+        include_diagnostics=True,
     )
 
     agent._hydrate_natural_import_aliases_from_history(
@@ -411,6 +428,31 @@ def test_fake_adapter_failure_fails_closed_and_does_not_bind_alias():
     assert response.diagnostics["alias_resolution"]["resolved_document_id"] is None
 
 
+def test_file_not_found_response_is_human_readable_without_diagnostics_dump():
+    response = maybe_handle_natural_file_import(
+        "帮我导入这个文件：/Users/private/C塔项目人力配置及成本测算表0506.xlsx。",
+        upload_adapter=FakeUploadAdapter(
+            NaturalFileUploadResult(
+                success=False,
+                failed_reason="file_not_found",
+                error_type="file_not_found",
+            )
+        ),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    rendered = response.final_response
+    assert "我识别到你想导入一份文件" in rendered
+    assert "C塔项目 / 人力配置 / 成本测算" in rendered
+    assert "无法读取到这个文件" in rendered
+    assert "/Users/hermes/import_samples/" in rendered
+    assert "Natural file import diagnostics:" not in rendered
+    assert "document_id=" not in rendered
+    assert "upload_adapter_status" not in rendered
+    assert "/Users/private" not in rendered
+
+
 def test_runtime_response_keeps_import_diagnostics_out_of_evidence_and_sets_safety_flags():
     response = maybe_handle_natural_file_import(
         "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
@@ -426,9 +468,11 @@ def test_runtime_response_keeps_import_diagnostics_out_of_evidence_and_sets_safe
     assert response.diagnostics["snapshot_as_answer"] is False
     assert response.diagnostics["transcript_as_fact"] is False
     assert response.diagnostics["requires_retrieval_evidence"] is True
-    assert "import_diagnostics_as_retrieval_evidence=false" in response.final_response
-    assert "facts_as_answer=false" in response.final_response
-    assert "requires_retrieval_evidence=true" in response.final_response
+    assert "工作区和别名只是定位信息" in response.final_response
+    assert "retrieval evidence 和 citation" in response.final_response
+    assert "import_diagnostics_as_retrieval_evidence=false" not in response.final_response
+    assert "facts_as_answer=false" not in response.final_response
+    assert "requires_retrieval_evidence=true" not in response.final_response
 
 
 def test_rendered_import_diagnostics_do_not_expose_raw_paths_or_turn_into_evidence():
@@ -466,8 +510,9 @@ def test_rendered_import_diagnostics_do_not_expose_raw_paths_or_turn_into_eviden
     )
 
     assert "/Users/example/private" not in response
-    assert "retrieval_evidence_document_ids=[]" in response
-    assert "import_diagnostics_as_retrieval_evidence=false" in response
+    assert "Natural file import diagnostics:" not in response
+    assert "retrieval_evidence_document_ids=[]" not in response
+    assert "import_diagnostics_as_retrieval_evidence=false" not in response
 
 
 def test_missing_document_or_version_fails_closed():

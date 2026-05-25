@@ -58,43 +58,69 @@ def _runtime_diagnostics(flow_result: NaturalFileImportFlowResult) -> dict[str, 
     return diagnostics
 
 
-def render_natural_file_import_response(diagnostics: dict[str, Any]) -> str:
+def render_natural_file_import_response(
+    diagnostics: dict[str, Any],
+    *,
+    include_diagnostics: bool = False,
+) -> str:
     alias_resolution = diagnostics.get("alias_resolution") or {}
     alias = alias_resolution.get("alias") if isinstance(alias_resolution, dict) else None
     upload_succeeded = diagnostics.get("ingestion_status") == "upload_succeeded"
-    lines = [
-        "文件我已经记下了。" if upload_succeeded else "Natural file import diagnostics:",
-    ]
-    if upload_succeeded and alias:
-        workspace_context = diagnostics.get("workspace_context") or {}
-        alias_status = diagnostics.get("alias_status") or alias_resolution.get("status")
-        lines.extend(
-            [
-                f"别名我设定为：@{alias}",
-                "后续你可以用这个别名继续问我；我仍会通过 retrieval evidence 和 citation 回答文件内容。",
-                "workspace_context:",
-                f"  workspace_id: {workspace_context.get('workspace_id')}",
-                f"  workspace_name: {workspace_context.get('workspace_name')}",
-                f"  workspace_type: {workspace_context.get('workspace_type')}",
-                f"  document_category: {workspace_context.get('document_category')}",
-                f"  confidence: {workspace_context.get('confidence')}",
-                f"  needs_user_confirmation: {_bool_text(workspace_context.get('needs_user_confirmation'))}",
-                f"  suggested_alias: \"@{alias}\"",
-                f"  alias_status: {alias_status}",
-                f"Hermes_memory import status: {diagnostics.get('ingestion_status')}",
-                f"safe_reference: document_id={diagnostics.get('document_id')}; version_id={diagnostics.get('version_id')}",
-                f"chunk/index status: chunk_count={diagnostics.get('chunk_count')}; indexed_count={diagnostics.get('indexed_count')}",
-                f"recommended_alias=@{alias}",
-                "建议后续这样问：围绕 @"
-                f"{alias} 总结重点；围绕 @{alias} 查找条款并给出 citation；对比 @{alias} 和另一份文件。",
-                "Evidence boundary: 导入诊断不是 retrieval evidence；回答文件内容仍必须依赖 retrieval evidence/citations。"
-                " 如果当前证据不足，输出 Missing Evidence，不从导入元数据、历史记忆或猜测中补答案。",
-                "",
-                "Natural file import diagnostics:",
-            ]
-        )
+    if upload_succeeded:
+        lines = _render_import_success(diagnostics, alias)
     else:
-        lines.append("")
+        lines = _render_import_failure(diagnostics)
+
+    if include_diagnostics:
+        lines.extend(["", *_debug_diagnostics_lines(diagnostics)])
+    return "\n".join(lines)
+
+
+def _render_import_success(diagnostics: dict[str, Any], alias: str | None) -> list[str]:
+    workspace_context = diagnostics.get("workspace_context") or {}
+    workspace_name = _display_value(workspace_context.get("workspace_name"), fallback="待确认工作区")
+    category = _display_value(workspace_context.get("document_category"), fallback="待确认分类")
+    alias_text = f"@{alias}" if alias else _display_value(diagnostics.get("suggested_alias"), fallback="@待确认别名")
+    fuzzy_query = _fuzzy_followup_query(workspace_name, category)
+    return [
+        "文件我已经记下了。",
+        "",
+        "我把它放入了：",
+        f"- 工作区：{workspace_name}",
+        f"- 分类：{category}",
+        f"- 别名：{alias_text}",
+        "",
+        "后续你可以直接问：",
+        f"- {alias_text} 这份文件有哪些重点？",
+        f"- {fuzzy_query}",
+        "",
+        "说明：工作区和别名只是定位信息；回答文件内容时我仍会基于 retrieval evidence 和 citation。",
+    ]
+
+
+def _render_import_failure(diagnostics: dict[str, Any]) -> list[str]:
+    workspace_context = diagnostics.get("workspace_context") or {}
+    workspace_name = _display_value(workspace_context.get("workspace_name"), fallback="待确认工作区")
+    category = _display_value(workspace_context.get("document_category"), fallback="待确认分类")
+    return [
+        f"我识别到你想导入一份文件，并判断它可能属于：{workspace_name} / {category}。",
+        "",
+        "但我现在无法读取到这个文件。通常是因为这个路径对 Hermes 后端不可见。",
+        "",
+        "你可以把文件放到 Hermes 授权导入目录，例如：",
+        "/Users/hermes/import_samples/",
+        "",
+        "然后再对我说：",
+        "帮我导入这个文件：/Users/hermes/import_samples/文件名.docx。",
+    ]
+
+
+def _debug_diagnostics_lines(diagnostics: dict[str, Any]) -> list[str]:
+    alias_resolution = diagnostics.get("alias_resolution") or {}
+    alias = alias_resolution.get("alias") if isinstance(alias_resolution, dict) else None
+    lines = ["Natural file import diagnostics:"]
+    if alias:
+        lines.append(f"别名我设定为：@{alias}")
     lines.extend(
         [
         f"- natural_import_detected={_bool_text(diagnostics.get('natural_import_detected'))}",
@@ -129,7 +155,20 @@ def render_natural_file_import_response(diagnostics: dict[str, Any]) -> str:
         lines.append("Import was not completed. No retrieval evidence was produced.")
     else:
         lines.append("Import preflight completed through the configured upload adapter.")
-    return "\n".join(lines)
+    return lines
+
+
+def _display_value(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip()
+    return text if text and text != "unknown" else fallback
+
+
+def _fuzzy_followup_query(workspace_name: str, category: str) -> str:
+    if workspace_name != "待确认工作区" and "人力" in category and "成本" in category:
+        return f"帮我找 {workspace_name}的人力成本表"
+    if workspace_name != "待确认工作区":
+        return f"帮我找 {workspace_name}的相关文件"
+    return "帮我找刚才导入的这份文件"
 
 
 def _bool_text(value: Any) -> str:

@@ -470,6 +470,37 @@ def test_context_builder_does_not_apply_personnel_boundary_to_broad_qualificatio
     assert "personnel_safe_fallback_template" not in context
     assert "STRICT PERSONNEL-ONLY FINAL ANSWER GUARD" not in context
 
+
+def test_context_builder_file_discovery_candidates_hide_technical_ids_by_default():
+    retrieval = RetrievalOutput(
+        backend="fake",
+        trace={
+            "scope_resolution_status": "file_discovery_candidates",
+            "file_discovery_requires_clarification": True,
+            "file_candidates": [
+                {
+                    "alias": "C塔人力成本测算表",
+                    "document_id": "doc-secret",
+                    "version_id": "ver-secret",
+                    "title": "C塔项目人力配置及成本测算表0506.xlsx",
+                    "source_name": "C塔项目人力配置及成本测算表0506.xlsx",
+                    "workspace_id": "ws-secret",
+                    "workspace_name": "C塔项目",
+                    "document_category": "人力配置 / 成本测算",
+                    "chunk_count": 4,
+                }
+            ],
+        },
+    )
+
+    context = ContextBuilder().build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "@C塔人力成本测算表 — 工作区：C塔项目 / 人力配置 / 成本测算" in context
+    assert "document_id=doc-secret" not in context
+    assert "version_id=ver-secret" not in context
+    assert "workspace_id=ws-secret" not in context
+    assert "chunk_count=4" not in context
+
 def _personnel_guard_result(profile: str = "personnel_scope") -> KernelResult:
     retrieval = RetrievalOutput(backend="fake", trace={"deep_field_profile": profile, "metadata_deep_field_profile": profile})
     return KernelResult(route=QueryRoute("enterprise_retrieval", True, "test"), retrieval=retrieval, trace={"deep_field_profile": profile, "metadata_deep_field_profile": profile})

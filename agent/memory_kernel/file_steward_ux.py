@@ -20,6 +20,9 @@ class FileCandidate:
     version_id: str | None = None
     source_name: str | None = None
     source_type: str | None = None
+    alias: str | None = None
+    workspace_name: str | None = None
+    document_category: str | None = None
     match_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -29,6 +32,9 @@ class FileCandidate:
             "title": self.title,
             "source_name": self.source_name,
             "source_type": self.source_type,
+            "alias": self.alias,
+            "workspace_name": self.workspace_name,
+            "document_category": self.document_category,
             "match_reason": self.match_reason,
         }
 

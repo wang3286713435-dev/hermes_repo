@@ -1,5 +1,13 @@
 # TODO
 
+## Phase 2.116
+
+- 已完成 natural import user-facing response polish：默认成功导入回复展示工作区、分类、别名、后续问法和 evidence 边界，不再打印大段 `Natural file import diagnostics`。
+- 失败导入回复改为路径不可见说明与授权目录提示；debug diagnostics 仍保留在 `response.diagnostics` / 显式 debug render。
+- Fuzzy discovery candidate 默认只展示 safe alias / workspace / category，隐藏 document/version/workspace/chunk 技术 ID。
+- 验证：py_compile 通过；targeted suite `38 passed`；natural import / flow / session / file steward regression `130 passed`。
+- 下一步：Codex B review；通过后交 Codex C / 测试机 OpenWebUI / 8642 复验默认用户输出。
+
 ## Phase 2.114a
 
 - 已完成 natural import path parser 最小修复：中文全角冒号后的绝对路径、中文句号结尾、中文路径、未加引号且包含空格的目录路径均可提取。
