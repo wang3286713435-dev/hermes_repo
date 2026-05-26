@@ -501,6 +501,34 @@ def test_context_builder_file_discovery_candidates_hide_technical_ids_by_default
     assert "workspace_id=ws-secret" not in context
     assert "chunk_count=4" not in context
 
+
+def test_context_builder_file_discovery_candidates_hide_raw_paths_from_display_fallbacks():
+    retrieval = RetrievalOutput(
+        backend="fake",
+        trace={
+            "scope_resolution_status": "file_discovery_candidates",
+            "file_discovery_requires_clarification": True,
+            "file_candidates": [
+                {
+                    "document_id": "doc-secret",
+                    "version_id": "ver-secret",
+                    "title": "/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx",
+                    "source_name": "/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx",
+                    "display_path": "/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx",
+                    "chunk_count": 4,
+                }
+            ],
+        },
+    )
+
+    context = ContextBuilder().build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "C塔项目人力配置及成本测算表0506.xlsx" in context
+    assert "/Users/hermes/import_samples" not in context
+    assert "document_id=doc-secret" not in context
+    assert "version_id=ver-secret" not in context
+    assert "display_path" not in context
+
 def _personnel_guard_result(profile: str = "personnel_scope") -> KernelResult:
     retrieval = RetrievalOutput(backend="fake", trace={"deep_field_profile": profile, "metadata_deep_field_profile": profile})
     return KernelResult(route=QueryRoute("enterprise_retrieval", True, "test"), retrieval=retrieval, trace={"deep_field_profile": profile, "metadata_deep_field_profile": profile})

@@ -557,16 +557,20 @@ class ContextBuilder:
         for candidate in raw_candidates:
             if not isinstance(candidate, dict) or not candidate.get("document_id"):
                 continue
+            title = self._safe_file_candidate_display(
+                candidate.get("title") or candidate.get("source_name") or candidate.get("display_path") or candidate.get("document_id"),
+                fallback=str(candidate.get("document_id")),
+            )
             candidates.append(
                 FileCandidate(
                     document_id=str(candidate.get("document_id")),
                     version_id=self._optional_str(candidate.get("version_id")),
-                    title=str(candidate.get("title") or candidate.get("source_name") or candidate.get("document_id")),
-                    source_name=self._optional_str(candidate.get("source_name")),
+                    title=title,
+                    source_name=self._safe_optional_file_candidate_display(candidate.get("source_name")),
                     source_type=self._optional_str(candidate.get("source_type")),
-                    alias=self._optional_str(candidate.get("alias")),
-                    workspace_name=self._optional_str(candidate.get("workspace_name")),
-                    document_category=self._optional_str(candidate.get("document_category")),
+                    alias=self._safe_optional_file_candidate_display(candidate.get("alias")),
+                    workspace_name=self._safe_optional_file_candidate_display(candidate.get("workspace_name")),
+                    document_category=self._safe_optional_file_candidate_display(candidate.get("document_category")),
                     match_reason=self._optional_str(candidate.get("match_reason") or candidate.get("reason")),
                 )
             )
@@ -612,9 +616,9 @@ class ContextBuilder:
                 if not isinstance(candidate, dict):
                     continue
                 alias = candidate.get("alias")
-                workspace_name = candidate.get("workspace_name") or candidate.get("title") or "待确认工作区"
-                category = candidate.get("document_category") or "待确认分类"
-                visible_name = f"@{alias}" if alias else str(candidate.get("title") or "候选文件")
+                workspace_name = self._safe_file_candidate_display(candidate.get("workspace_name"), fallback="待确认工作区")
+                category = self._safe_file_candidate_display(candidate.get("document_category"), fallback="待确认分类")
+                visible_name = f"@{alias}" if alias else self._safe_file_candidate_display(candidate.get("title"), fallback="候选文件")
                 lines.append(
                     f"file_candidate: {visible_name} — 工作区：{workspace_name} / {category}; "
                     f"match_reason={candidate.get('match_reason')}; technical_ids_hidden=true"
@@ -692,3 +696,24 @@ class ContextBuilder:
         if value is None:
             return None
         return str(value)
+
+    def _safe_optional_file_candidate_display(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        return self._safe_file_candidate_display(value, fallback="")
+
+    def _safe_file_candidate_display(self, value: Any, *, fallback: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return fallback
+        if text.startswith("file://"):
+            text = text.removeprefix("file://")
+        if (
+            text.startswith("/")
+            or text.startswith("~")
+            or "\\" in text
+            or re.match(r"^[A-Za-z]:[/\\]", text)
+        ):
+            parts = [part for part in re.split(r"[/\\]+", text) if part]
+            return parts[-1] if parts else fallback
+        return text

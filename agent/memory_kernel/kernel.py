@@ -616,6 +616,7 @@ class MemoryKernel:
             flags.append("no_current_retrieval_evidence")
         unexpected_ids = [document_id for document_id in evidence_document_ids if document_id not in allowed_ids]
         trace["third_document_mixed"] = bool(unexpected_ids)
+        trace["third_document_contamination"] = bool(unexpected_ids)
         trace["third_document_mixed_document_ids"] = unexpected_ids
         if scope_decision.cross_document_allowed:
             trace["compare_scope_document_ids"] = list(scope_decision.allowed_document_ids or [])
