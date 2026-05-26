@@ -76,7 +76,7 @@ class ContextBuilder:
         if retrieval.items:
             parts.append("Retrieved evidence:")
         for index, item in enumerate(retrieval.items, start=1):
-            source = item.source_name or item.source_uri or item.document_id
+            source = self._safe_file_candidate_display(item.source_name or item.source_uri, fallback=item.document_id)
             heading = " > ".join(item.heading_path or item.section_path or [])
             page = self._page_label(item.page_start, item.page_end)
             header = f"[E{index}] source={source}; document_id={item.document_id}; version_id={item.version_id}; chunk_id={item.chunk_id}"
@@ -132,7 +132,7 @@ class ContextBuilder:
         }
 
     def _citation_line(self, index: int, citation: KernelCitation) -> str:
-        source = citation.source_name or citation.source_uri or citation.document_id
+        source = self._safe_file_candidate_display(citation.source_name or citation.source_uri, fallback=citation.document_id)
         heading = " > ".join(citation.heading_path or citation.section_path or [])
         page = self._page_label(citation.page_start, citation.page_end)
         suffix = []
@@ -543,8 +543,8 @@ class ContextBuilder:
         return ActiveDocumentHint(
             document_id=str(document_id),
             version_id=self._optional_str(trace.get("active_document_version_id")),
-            title=str(title or document_id),
-            source_name=self._optional_str(trace.get("active_document_source_name")),
+            title=self._safe_file_candidate_display(title, fallback=str(document_id)),
+            source_name=self._safe_optional_file_candidate_display(trace.get("active_document_source_name")),
             source_type=self._optional_str(trace.get("active_document_source_type")),
             scope_source=self._optional_str(trace.get("document_scope_source") or trace.get("scope_source")),
         )
@@ -558,7 +558,12 @@ class ContextBuilder:
             if not isinstance(candidate, dict) or not candidate.get("document_id"):
                 continue
             title = self._safe_file_candidate_display(
-                candidate.get("title") or candidate.get("source_name") or candidate.get("display_path") or candidate.get("document_id"),
+                candidate.get("title")
+                or candidate.get("source_name")
+                or candidate.get("display_path")
+                or candidate.get("source_uri")
+                or candidate.get("alias_source_name")
+                or candidate.get("document_id"),
                 fallback=str(candidate.get("document_id")),
             )
             candidates.append(
@@ -585,12 +590,13 @@ class ContextBuilder:
 
     def _file_steward_title(self, metadata: dict[str, Any] | None, source_name: str | None, document_id: str) -> str:
         data = metadata or {}
-        return str(
+        return self._safe_file_candidate_display(
             data.get("title")
             or data.get("document_title")
             or data.get("source_title")
             or source_name
-            or document_id
+            or document_id,
+            fallback=document_id,
         )
 
     def _file_steward_source_type(self, metadata: dict[str, Any] | None) -> str | None:
@@ -670,7 +676,7 @@ class ContextBuilder:
         document_id: str,
     ) -> str:
         data = metadata or {}
-        return str(
+        return self._safe_file_candidate_display(
             source_name
             or source_uri
             or data.get("source_name")
@@ -678,7 +684,8 @@ class ContextBuilder:
             or data.get("source_title")
             or data.get("title")
             or data.get("document_title")
-            or document_id
+            or document_id,
+            fallback=document_id,
         )
 
     def _format_active_document_line(self, active_document: dict[str, Any]) -> str:
@@ -706,8 +713,9 @@ class ContextBuilder:
         text = str(value or "").strip()
         if not text:
             return fallback
-        if text.startswith("file://"):
-            text = text.removeprefix("file://")
+        if re.match(r"^(file|nas|smb)://", text, flags=re.IGNORECASE):
+            text = re.sub(r"^(file|nas|smb)://", "", text, flags=re.IGNORECASE)
+            text = "/" + text.lstrip("/")
         if (
             text.startswith("/")
             or text.startswith("~")

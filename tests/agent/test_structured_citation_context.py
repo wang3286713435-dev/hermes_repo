@@ -529,6 +529,81 @@ def test_context_builder_file_discovery_candidates_hide_raw_paths_from_display_f
     assert "version_id=ver-secret" not in context
     assert "display_path" not in context
 
+
+def test_context_builder_file_discovery_candidates_use_safe_source_uri_basename_when_title_missing():
+    retrieval = RetrievalOutput(
+        backend="fake",
+        trace={
+            "scope_resolution_status": "file_discovery_candidates",
+            "file_discovery_requires_clarification": True,
+            "file_candidates": [
+                {
+                    "document_id": "doc-secret",
+                    "version_id": "ver-secret",
+                    "title": "",
+                    "source_name": "",
+                    "display_path": "",
+                    "source_uri": "file:///Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx",
+                    "alias_source_name": "nas://internal/share/C塔项目人力配置及成本测算表0506.xlsx",
+                    "workspace_name": "C塔项目",
+                    "document_category": "人力配置 / 成本测算",
+                }
+            ],
+        },
+    )
+
+    context = ContextBuilder().build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "C塔项目人力配置及成本测算表0506.xlsx" in context
+    assert "人力配置 / 成本测算" in context
+    assert "/Users/" not in context
+    assert "file://" not in context
+    assert "nas://" not in context
+    assert "smb://" not in context
+    assert "document_id=doc-secret" not in context
+
+
+def test_context_builder_sanitizes_active_document_and_evidence_source_paths():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(
+                chunk_id="chunk-a",
+                document_id="doc-a",
+                version_id="v1",
+                text="示例内容",
+                source_name="/Volumes/company/import_samples/主标书.docx",
+                source_uri="smb://nas/company/import_samples/主标书.docx",
+            )
+        ],
+        citations=[
+            KernelCitation(
+                document_id="doc-a",
+                version_id="v1",
+                chunk_id="chunk-a",
+                source_name="/Users/hermes/import_samples/主标书.docx",
+                source_uri="file:///Users/hermes/import_samples/主标书.docx",
+            )
+        ],
+        backend="fake",
+        trace={
+            "active_document_id": "doc-a",
+            "active_document_version_id": "v1",
+            "active_document_title": "/Users/hermes/import_samples/主标书.docx",
+            "active_document_source_name": "nas://internal/share/主标书.docx",
+            "document_scope_source": "active_document",
+            "scope_resolution_status": "active_document_applied",
+        },
+    )
+
+    context = ContextBuilder().build(QueryRoute("enterprise_retrieval", True, "test"), retrieval)
+
+    assert "主标书.docx" in context
+    assert "/Users/" not in context
+    assert "/Volumes/" not in context
+    assert "file://" not in context
+    assert "nas://" not in context
+    assert "smb://" not in context
+
 def _personnel_guard_result(profile: str = "personnel_scope") -> KernelResult:
     retrieval = RetrievalOutput(backend="fake", trace={"deep_field_profile": profile, "metadata_deep_field_profile": profile})
     return KernelResult(route=QueryRoute("enterprise_retrieval", True, "test"), retrieval=retrieval, trace={"deep_field_profile": profile, "metadata_deep_field_profile": profile})

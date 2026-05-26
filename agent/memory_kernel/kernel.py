@@ -618,6 +618,16 @@ class MemoryKernel:
         trace["third_document_mixed"] = bool(unexpected_ids)
         trace["third_document_contamination"] = bool(unexpected_ids)
         trace["third_document_mixed_document_ids"] = unexpected_ids
+        retrieval_trace = trace.get("retrieval_trace")
+        if isinstance(retrieval_trace, dict):
+            retrieval_trace["third_document_mixed"] = bool(unexpected_ids)
+            retrieval_trace["third_document_contamination"] = bool(unexpected_ids)
+            retrieval_trace["third_document_mixed_document_ids"] = unexpected_ids
+        context_scope = trace.get("context_scope")
+        if isinstance(context_scope, dict):
+            context_scope["third_document_mixed"] = bool(unexpected_ids)
+            context_scope["third_document_contamination"] = bool(unexpected_ids)
+            context_scope["third_document_mixed_document_ids"] = unexpected_ids
         if scope_decision.cross_document_allowed:
             trace["compare_scope_document_ids"] = list(scope_decision.allowed_document_ids or [])
             trace["compare_evidence_document_ids_within_scope"] = bool(allowed_ids) and not unexpected_ids

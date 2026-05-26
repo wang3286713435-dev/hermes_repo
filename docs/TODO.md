@@ -1,5 +1,11 @@
 # TODO
 
+## Phase 2.116c
+
+- Fixed remaining Phase 2.116 live No-Go root causes locally: alias-scoped retrieval now normalizes stale nested `third_document_contamination` fields when actual returned evidence is in scope, and fuzzy discovery / active document / evidence / citation display paths now sanitize raw local path exits.
+- Verification: live-shape targeted regression `4 passed`; py_compile passed; natural import / flow / session scope / structured citation / file steward regression `135 passed`.
+- No OpenWebUI / 8642 live validation in this turn. Next: Codex B review, then Codex C reruns Phase 2.116 live validation before any baseline.
+
 ## Phase 2.116b
 
 - Fixed local No-Go blockers from Phase 2.116 live validation: fuzzy discovery candidate display sanitizes absolute-path fallbacks from `title/source_name/display_path`, and alias retrieval contamination diagnostics now override stale `third_document_contamination` when actual returned evidence is in scope.

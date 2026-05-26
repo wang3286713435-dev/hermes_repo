@@ -1908,6 +1908,54 @@ def test_alias_scope_overrides_stale_third_document_contamination_trace_when_evi
     assert "unexpected_document_id" not in governed["contamination_flags"]
 
 
+def test_alias_scope_overrides_stale_nested_retrieval_trace_contamination_when_evidence_is_in_scope():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="A evidence"),
+        ],
+        citations=[
+            KernelCitation(document_id="doc-a", version_id="v1", chunk_id="a1"),
+        ],
+        backend="fake",
+        trace={
+            "retrieval_trace": {
+                "third_document_contamination": True,
+                "third_document_mixed": True,
+                "third_document_mixed_document_ids": ["doc-c"],
+            },
+            "context_scope": {
+                "third_document_contamination": True,
+            },
+        },
+    )
+    decision = DocumentScopeDecision(
+        filters={"document_id": "doc-a", "version_id": "v1"},
+        trace={
+            "scope_resolution_status": "alias_resolved",
+            "alias_resolution": {
+                "status": "alias_resolved",
+                "alias": "测试文件",
+                "resolved_document_id": "doc-a",
+                "resolved_version_id": "v1",
+            },
+        },
+        allowed_document_ids=["doc-a"],
+        cross_document_allowed=False,
+    )
+
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    governed = kernel._with_context_governance_trace(retrieval.trace, retrieval, decision)
+
+    assert governed["retrieval_evidence_document_ids"] == ["doc-a"]
+    assert governed["third_document_mixed"] is False
+    assert governed["third_document_contamination"] is False
+    assert governed["third_document_mixed_document_ids"] == []
+    assert governed["retrieval_trace"]["third_document_contamination"] is False
+    assert governed["retrieval_trace"]["third_document_mixed"] is False
+    assert governed["retrieval_trace"]["third_document_mixed_document_ids"] == []
+    assert governed["context_scope"]["third_document_contamination"] is False
+
+
 def test_compare_scope_does_not_flag_third_document_when_evidence_is_subset():
     retrieval = RetrievalOutput(
         items=[
@@ -1967,6 +2015,7 @@ def test_compare_scope_still_flags_actual_third_document_evidence():
 
     assert governed["retrieval_evidence_document_ids"] == ["doc-a", "doc-c"]
     assert governed["third_document_mixed"] is True
+    assert governed["third_document_contamination"] is True
     assert governed["third_document_mixed_document_ids"] == ["doc-c"]
     assert "unexpected_document_id" in governed["contamination_flags"]
 
