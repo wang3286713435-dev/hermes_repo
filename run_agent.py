@@ -85,6 +85,7 @@ from agent.memory_kernel.interfaces import KernelRequest
 from agent.memory_kernel.merge_policy import merge_request_contexts
 from agent.memory_kernel.hermes_memory_upload_client import HermesMemoryUploadClient
 from agent.memory_kernel.natural_file_import_runtime import (
+    build_natural_import_llm_messages,
     maybe_handle_natural_file_import,
     render_natural_file_import_response,
 )
@@ -2911,6 +2912,34 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+
+    def _generate_natural_import_llm_response(self, context: Dict[str, Any]) -> str:
+        """Generate the ordinary natural-import reply from structured context.
+
+        The deterministic renderer remains the validator/fallback path; this
+        helper routes the normal user-visible import response through the same
+        configured LLM runtime family as Hermes chat.
+        """
+
+        try:
+            from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+
+            response = call_llm(
+                provider=self.provider,
+                model=self.model,
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                main_runtime=getattr(self, "_primary_runtime", None),
+                messages=build_natural_import_llm_messages(context),
+                temperature=None,
+                max_tokens=700,
+                timeout=float(os.environ.get("HERMES_NATURAL_IMPORT_RESPONSE_TIMEOUT", "45")),
+            )
+            text = extract_content_or_reasoning(response)
+            return self._strip_think_blocks(text or "").strip()
+        except Exception as exc:
+            logger.warning("Natural import LLM response generation failed: %s", exc)
+            return ""
 
     def _persist_natural_import_alias(self, diagnostics: Dict[str, Any]) -> None:
         """Seed session alias state after a successful natural file import."""
@@ -8927,17 +8956,23 @@ class AIAgent:
             )
             self._persist_natural_import_alias(_natural_import_response.diagnostics)
             final_response = render_natural_file_import_response(
-                _natural_import_response.diagnostics
+                _natural_import_response.diagnostics,
+                llm_response_generator=self._generate_natural_import_llm_response,
             )
             user_msg = {"role": "user", "content": user_message}
             assistant_msg = {"role": "assistant", "content": final_response}
             messages.extend([user_msg, assistant_msg])
             self._persist_session(messages, conversation_history)
+            natural_import_api_calls = (
+                1
+                if _natural_import_response.diagnostics.get("natural_import_response_path") == "llm"
+                else 0
+            )
             return {
                 "final_response": final_response,
                 "last_reasoning": None,
                 "messages": messages,
-                "api_calls": 0,
+                "api_calls": natural_import_api_calls,
                 "completed": True,
                 "partial": False,
                 "interrupted": False,

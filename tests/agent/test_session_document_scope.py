@@ -1748,6 +1748,9 @@ def test_file_steward_alias_missing_context_block_gives_next_step_without_eviden
     assert "retrieval_evidence_document_ids=[]" in context
     assert "next_action=ask_user_for_exact_title_or_import_file" in context
     assert "metadata_as_answer=false" in context
+    assert "/Users/" not in context
+    assert "/Volumes/" not in context
+    assert "file://" not in context
     assert "requires_retrieval_evidence=true" in context
     assert "Retrieved evidence:" not in context
 

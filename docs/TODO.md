@@ -1,5 +1,20 @@
 # TODO
 
+## Phase 2.118c
+
+- Implemented Codex B review fix for natural import alias overclaim safety: the final validator now rejects broader natural-language alias binding / follow-up availability overclaims when `can_claim_alias_bound=false`.
+- Added save/import overclaim coverage when `can_claim_file_remembered=false`, including session integration, saved, collected, imported-to-memory style claims.
+- Valid bound-alias wording still passes so real success responses are not degraded.
+- Verification: TDD red reproduced 3 failures; py_compile passed; natural import runtime / flow / session scope regression `124 passed`; legacy natural import parser tests `28 passed`; `git diff --check` passed.
+- Next: Codex B review before runtime candidate or OpenWebUI / test-machine validation. Do not enter Phase 2.119 yet.
+
+## Phase 2.118b
+
+- Implemented Codex B review fix for natural import replies: `natural_import_context` now enters the Hermes LLM response path, and `run_agent.py` uses the LLM generator for ordinary natural import early-return responses when available.
+- The deterministic renderer remains as safety fallback / debug / test utility; unsafe LLM output such as false success, alias overclaim, raw path / URI, secret, or diagnostics leakage is replaced by fallback.
+- Verification: py_compile passed; natural import runtime / flow / session scope regression `120 passed`; legacy natural import parser tests `28 passed`; `git diff --check` passed.
+- Next: Codex B review before runtime candidate or OpenWebUI / test-machine validation. Do not enter Phase 2.119 yet.
+
 ## Phase 2.116d
 
 - Fixed the correct-version live No-Go follow-up blockers locally: alias diagnostics now remain resolved only when returned evidence confirms the imported alias scope, import failure guidance no longer prints hardcoded raw local paths, and fuzzy discovery can surface owner-scoped natural import continuity candidates after session drift.

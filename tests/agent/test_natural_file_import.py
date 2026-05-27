@@ -30,6 +30,17 @@ def test_parse_quoted_path_and_title():
     assert request.trace["import_title"] == "测试文件"
 
 
+def test_parse_single_quoted_pdf_path_with_spaces():
+    request = parse_natural_file_import(
+        "请导入 '/Users/vc/Documents/New project/hermes训练文件 /PDF资料/数据中台体系建设方案.pdf' 到企业记忆，别名为 @数据中台体系建设方案"
+    )
+
+    assert request.detected is True
+    assert request.source_path == "/Users/vc/Documents/New project/hermes训练文件 /PDF资料/数据中台体系建设方案.pdf"
+    assert request.alias == "数据中台体系建设方案"
+    assert request.failed_reason is None
+
+
 def test_parse_alias_binding():
     request = parse_natural_file_import("上传 /tmp/demo.xlsx 到企业记忆，绑定为 @硬件清单")
 

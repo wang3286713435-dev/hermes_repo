@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from agent.memory_kernel.natural_file_import import NaturalFileImportRequest
 from agent.memory_kernel.natural_file_import_runtime import (
     NaturalFileImportRuntimeResponse,
+    build_natural_import_context,
     maybe_handle_natural_file_import,
     render_natural_file_import_response,
+    validate_natural_import_response,
 )
 from agent.memory_kernel.natural_file_upload_adapter import NaturalFileUploadResult
 from agent.memory_kernel.config import MemoryKernelConfig
@@ -24,6 +26,19 @@ class FakeUploadAdapter:
         return self.result
 
 
+@dataclass
+class FakeNaturalImportLLM:
+    reply: str
+    contexts: list[dict] | None = None
+
+    def __post_init__(self) -> None:
+        self.contexts = []
+
+    def __call__(self, context: dict) -> str:
+        self.contexts.append(context)
+        return self.reply
+
+
 def _success_result() -> NaturalFileUploadResult:
     return NaturalFileUploadResult(
         success=True,
@@ -33,6 +48,50 @@ def _success_result() -> NaturalFileUploadResult:
         indexed_count=4,
         message="fake upload ok",
     )
+
+
+def _bound_success_diagnostics(alias: str = "测试文件") -> dict:
+    return {
+        "natural_import_detected": True,
+        "real_upload_enabled": True,
+        "upload_adapter_status": "executed",
+        "ingestion_status": "upload_succeeded",
+        "import_failed_reason": None,
+        "document_id": "doc-runtime",
+        "version_id": "ver-runtime",
+        "chunk_count": 4,
+        "indexed_count": 4,
+        "alias_persisted": True,
+        "alias_resolution": {
+            "status": "alias_bound",
+            "alias": alias,
+            "resolved_document_id": "doc-runtime",
+            "resolved_version_id": "ver-runtime",
+        },
+        "alias_continuity_status": "stored",
+        "alias_continuity_source": "natural_import_success",
+        "api_session_key_source": "api_derived_session_id",
+        "history_message_count": 0,
+        "retrieval_evidence_document_ids": [],
+        "import_diagnostics_as_retrieval_evidence": False,
+        "metadata_as_answer": False,
+        "facts_as_answer": False,
+        "snapshot_as_answer": False,
+        "transcript_as_fact": False,
+        "requires_retrieval_evidence": True,
+        "third_document_contamination": False,
+        "workspace_context": {
+            "workspace_id": "ws-demo",
+            "workspace_name": "测试项目",
+            "workspace_type": "project",
+            "document_category": "测试资料",
+            "confidence": "medium",
+            "needs_user_confirmation": True,
+        },
+        "suggested_alias": f"@{alias}",
+        "alias_status": "alias_bound",
+        "workspace_context_as_retrieval_evidence": False,
+    }
 
 
 def test_non_import_prompt_is_not_intercepted():
@@ -77,19 +136,16 @@ def test_fake_adapter_success_returns_upload_fields_and_alias_seeded():
     assert response.diagnostics["alias_resolution"]["status"] == "alias_seeded"
     assert response.diagnostics["alias_resolution"]["resolved_document_id"] == "doc-runtime"
     assert response.diagnostics["alias_resolution"]["resolved_version_id"] == "ver-runtime"
-    assert "文件我已经记下了" in response.final_response
-    assert "别名：@测试文件" in response.final_response
+    assert response.diagnostics["natural_import_context"]["can_claim_file_remembered"] is False
+    assert response.diagnostics["natural_import_context"]["can_claim_alias_bound"] is False
+    assert "文件我已经记下了" not in response.final_response
+    assert "别名：@测试文件" not in response.final_response
+    assert "别名还没有完成会话绑定" in response.final_response
 
 
-def test_success_response_explains_import_status_followups_and_evidence_boundary():
-    response = maybe_handle_natural_file_import(
-        "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
-        upload_adapter=FakeUploadAdapter(_success_result()),
-        real_upload_enabled=True,
-    )
-
-    assert response is not None
-    rendered = response.final_response
+def test_bound_success_response_explains_import_status_followups_and_evidence_boundary():
+    diagnostics = _bound_success_diagnostics()
+    rendered = render_natural_file_import_response(diagnostics)
 
     assert "Natural file import diagnostics:" not in rendered
     assert "document_id=doc-runtime" not in rendered
@@ -102,7 +158,19 @@ def test_success_response_explains_import_status_followups_and_evidence_boundary
     assert "retrieval evidence 和 citation" in rendered
 
 
-def test_success_response_uses_generated_safe_alias_without_exposing_raw_path():
+def test_bound_success_response_uses_generated_safe_alias_without_exposing_raw_path():
+    diagnostics = _bound_success_diagnostics(alias="建筑类数据样表")
+    diagnostics["import_source_path"] = "/Users/example/private/建筑类数据样表.xlsx"
+    diagnostics["alias_resolution"]["alias_generated"] = True
+    response = render_natural_file_import_response(diagnostics)
+
+    assert diagnostics["natural_import_context"]["can_claim_file_remembered"] is True
+    assert "别名：@建筑类数据样表" in response
+    assert "recommended_alias=@建筑类数据样表" not in response
+    assert "/Users/example/private" not in response
+
+
+def test_seeded_success_response_does_not_claim_alias_bound_without_persistence():
     response = maybe_handle_natural_file_import(
         "请把 /Users/example/private/建筑类数据样表.xlsx 导入企业记忆",
         upload_adapter=FakeUploadAdapter(_success_result()),
@@ -112,20 +180,23 @@ def test_success_response_uses_generated_safe_alias_without_exposing_raw_path():
     assert response is not None
     assert response.diagnostics["alias_resolution"]["alias_generated"] is True
     assert response.diagnostics["alias_resolution"]["alias"] == "建筑类数据样表"
-    assert "别名：@建筑类数据样表" in response.final_response
-    assert "recommended_alias=@建筑类数据样表" not in response.final_response
+    assert "文件我已经记下了" not in response.final_response
+    assert "别名：@建筑类数据样表" not in response.final_response
     assert "/Users/example/private" not in response.final_response
 
 
-def test_success_response_renders_workspace_context_and_keeps_raw_path_hidden():
-    response = maybe_handle_natural_file_import(
-        "帮我导入这个文件：/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx。",
-        upload_adapter=FakeUploadAdapter(_success_result()),
-        real_upload_enabled=True,
-    )
-
-    assert response is not None
-    rendered = response.final_response
+def test_bound_success_response_renders_workspace_context_and_keeps_raw_path_hidden():
+    diagnostics = _bound_success_diagnostics(alias="C塔人力成本测算表")
+    diagnostics["import_source_path"] = "/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx"
+    diagnostics["workspace_context"] = {
+        "workspace_id": "ws-demo",
+        "workspace_name": "C塔项目",
+        "workspace_type": "project",
+        "document_category": "人力配置 / 成本测算",
+        "confidence": "high",
+        "needs_user_confirmation": False,
+    }
+    rendered = render_natural_file_import_response(diagnostics)
 
     assert "Natural file import diagnostics:" not in rendered
     assert "工作区：C塔项目" in rendered
@@ -140,47 +211,7 @@ def test_success_response_renders_workspace_context_and_keeps_raw_path_hidden():
 
 
 def test_render_success_response_uses_persisted_alias_bound_status():
-    diagnostics = {
-        "natural_import_detected": True,
-        "real_upload_enabled": True,
-        "upload_adapter_status": "executed",
-        "ingestion_status": "upload_succeeded",
-        "import_failed_reason": None,
-        "document_id": "doc-runtime",
-        "version_id": "ver-runtime",
-        "chunk_count": 4,
-        "indexed_count": 4,
-        "alias_persisted": True,
-        "alias_resolution": {
-            "status": "alias_bound",
-            "alias": "测试文件",
-            "resolved_document_id": "doc-runtime",
-            "resolved_version_id": "ver-runtime",
-        },
-        "alias_continuity_status": "stored",
-        "alias_continuity_source": "natural_import_success",
-        "api_session_key_source": "api_derived_session_id",
-        "history_message_count": 0,
-        "retrieval_evidence_document_ids": [],
-        "import_diagnostics_as_retrieval_evidence": False,
-        "metadata_as_answer": False,
-        "facts_as_answer": False,
-        "snapshot_as_answer": False,
-        "transcript_as_fact": False,
-        "requires_retrieval_evidence": True,
-        "third_document_contamination": False,
-        "workspace_context": {
-            "workspace_id": "ws-demo",
-            "workspace_name": "测试项目",
-            "workspace_type": "project",
-            "document_category": "测试资料",
-            "confidence": "medium",
-            "needs_user_confirmation": True,
-        },
-        "suggested_alias": "@测试文件",
-        "alias_status": "alias_bound",
-        "workspace_context_as_retrieval_evidence": False,
-    }
+    diagnostics = _bound_success_diagnostics()
 
     response = render_natural_file_import_response(diagnostics, include_diagnostics=True)
 
@@ -206,6 +237,252 @@ def test_default_success_response_preserves_diagnostics_on_response_object_not_u
     assert response.diagnostics["chunk_count"] == 4
     assert response.diagnostics["workspace_context"]["workspace_name"] == "C塔项目"
     assert "Natural file import diagnostics:" not in response.final_response
+
+
+def test_natural_import_context_injection_present_and_separates_allowed_claims():
+    seeded = maybe_handle_natural_file_import(
+        "请把 '/Users/vc/Documents/New project/hermes训练文件 /PDF资料/数据中台体系建设方案.pdf' 导入企业记忆，并绑定为 @数据中台体系建设方案",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+    bound = _bound_success_diagnostics(alias="数据中台体系建设方案")
+
+    assert seeded is not None
+    seeded_context = seeded.diagnostics["natural_import_context"]
+    bound_context = build_natural_import_context(bound)
+
+    assert seeded.diagnostics["import_source_path"] == "/Users/vc/Documents/New project/hermes训练文件 /PDF资料/数据中台体系建设方案.pdf"
+    assert seeded_context["can_claim_file_remembered"] is False
+    assert seeded_context["can_claim_alias_bound"] is False
+    assert seeded_context["evidence_boundary"]["requires_retrieval_evidence"] is True
+    assert "raw_path" in seeded_context["forbidden_claims"]
+    assert bound_context["can_claim_file_remembered"] is True
+    assert bound_context["can_claim_alias_bound"] is True
+
+
+def test_llm_context_injection_receives_natural_import_context_and_success_passes_validator():
+    diagnostics = _bound_success_diagnostics()
+    llm = FakeNaturalImportLLM("我已把这份文件接入当前会话，并完成 @测试文件 的绑定。回答内容仍需要 retrieval evidence 和 citation。")
+
+    response = render_natural_file_import_response(
+        diagnostics,
+        llm_response_generator=llm,
+    )
+
+    assert llm.contexts == [diagnostics["natural_import_context"]]
+    assert response == llm.reply
+    assert diagnostics["natural_import_response_path"] == "llm"
+    assert diagnostics["natural_import_response_safety_fallback"] is False
+
+
+def test_llm_failure_response_stays_natural_and_safe():
+    llm = FakeNaturalImportLLM("我识别到你想导入文件，但这次没有完成导入，所以我不能说已经记下。请放入授权目录后再试。")
+
+    response = maybe_handle_natural_file_import(
+        "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        llm_response_generator=llm,
+    )
+
+    assert response is not None
+    assert llm.contexts == [response.diagnostics["natural_import_context"]]
+    assert response.final_response == llm.reply
+    assert "文件我已经记下了" not in response.final_response
+    assert "Natural file import diagnostics:" not in response.final_response
+    assert response.diagnostics["natural_import_response_path"] == "llm"
+
+
+def test_llm_false_success_response_is_replaced_by_safety_fallback():
+    llm = FakeNaturalImportLLM("文件我已经记下了。\n- 别名：@测试文件\n后续你可以直接问。")
+
+    response = maybe_handle_natural_file_import(
+        "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+        llm_response_generator=llm,
+    )
+
+    assert response is not None
+    assert llm.contexts == [response.diagnostics["natural_import_context"]]
+    assert response.final_response != llm.reply
+    assert "文件我已经记下了" not in response.final_response
+    assert "别名：@测试文件" not in response.final_response
+    assert "别名还没有完成会话绑定" in response.final_response
+    assert response.diagnostics["natural_import_response_path"] == "safety_fallback"
+    assert response.diagnostics["natural_import_response_safety_fallback"] is True
+
+
+def test_llm_raw_path_response_is_replaced_by_safety_fallback():
+    diagnostics = _bound_success_diagnostics()
+    llm = FakeNaturalImportLLM("我已把文件接入当前会话。原路径：/Users/example/private/demo.pdf。")
+
+    response = render_natural_file_import_response(
+        diagnostics,
+        llm_response_generator=llm,
+    )
+
+    assert response != llm.reply
+    assert "/Users/example/private" not in response
+    assert "别名：@测试文件" in response
+    assert diagnostics["natural_import_response_path"] == "safety_fallback"
+    assert diagnostics["natural_import_response_safety_fallback"] is True
+
+
+def test_llm_diagnostics_block_hidden_from_ordinary_response_but_available_in_debug():
+    diagnostics = _bound_success_diagnostics()
+    llm = FakeNaturalImportLLM("我已把这份文件接入当前会话，并完成 @测试文件 的绑定。")
+
+    ordinary = render_natural_file_import_response(
+        diagnostics,
+        llm_response_generator=llm,
+    )
+    debug = render_natural_file_import_response(
+        diagnostics,
+        include_diagnostics=True,
+        llm_response_generator=llm,
+    )
+
+    assert "Natural file import diagnostics:" not in ordinary
+    assert "Natural file import diagnostics:" in debug
+    assert "document_id=doc-runtime" in debug
+
+
+def test_false_success_guard_blocks_llm_claim_when_alias_not_bound():
+    response = maybe_handle_natural_file_import(
+        "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    guarded = validate_natural_import_response(
+        response.diagnostics["natural_import_context"],
+        "文件我已经记下了。\n- 别名：@测试文件\n后续你可以直接问。",
+    )
+
+    assert "文件我已经记下了" not in guarded
+    assert "别名：@测试文件" not in guarded
+    assert "别名还没有完成会话绑定" in guarded
+
+
+def test_alias_overclaim_natural_wording_blocked_when_alias_not_bound():
+    response = maybe_handle_natural_file_import(
+        "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    guarded = validate_natural_import_response(
+        response.diagnostics["natural_import_context"],
+        "我已把这份文件接入当前会话，并完成 @测试文件 的绑定。回答内容仍需要 retrieval evidence 和 citation。",
+    )
+
+    assert "完成 @测试文件 的绑定" not in guarded
+    assert "接入当前会话" not in guarded
+    assert "别名还没有完成会话绑定" in guarded
+
+
+def test_followup_alias_availability_overclaim_blocked_when_alias_not_bound():
+    response = maybe_handle_natural_file_import(
+        "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    guarded = validate_natural_import_response(
+        response.diagnostics["natural_import_context"],
+        "后续可以用 @测试文件 继续问，我会按这份文件回答。",
+    )
+
+    assert "后续可以用 @测试文件 继续问" not in guarded
+    assert "别名还没有完成会话绑定" in guarded
+
+
+def test_generic_save_or_import_overclaim_blocked_when_import_success_not_allowed():
+    response = maybe_handle_natural_file_import(
+        "请把 /tmp/demo.docx 导入企业记忆，并绑定为 @测试文件",
+        upload_adapter=FakeUploadAdapter(_success_result()),
+    )
+
+    assert response is not None
+    guarded = validate_natural_import_response(
+        response.diagnostics["natural_import_context"],
+        "我已经帮你保存到企业记忆里，后续可以继续查询。",
+    )
+
+    assert "保存到企业记忆里" not in guarded
+    assert "无法读取到这个文件" in guarded
+
+
+def test_valid_bound_alias_natural_wording_still_passes_validator():
+    context = build_natural_import_context(_bound_success_diagnostics(alias="测试文件"))
+    candidate = "我已把这份文件接入当前会话，并完成 @测试文件 的绑定。回答内容仍需要 retrieval evidence 和 citation。"
+
+    guarded = validate_natural_import_response(context, candidate)
+
+    assert guarded == candidate
+
+
+def test_raw_path_safety_validator_sanitizes_llm_output_even_on_success():
+    context = build_natural_import_context(_bound_success_diagnostics(alias="测试文件"))
+
+    guarded = validate_natural_import_response(
+        context,
+        "文件我已经记下了。原路径：/Users/example/private/demo.pdf\n- 别名：@测试文件",
+    )
+
+    assert "/Users/example/private" not in guarded
+    assert "别名：@测试文件" in guarded
+
+
+def test_pdf_parser_failure_is_safe_failure_without_success_or_raw_path():
+    response = maybe_handle_natural_file_import(
+        "请导入 '/Users/vc/Documents/New project/hermes训练文件 /PDF资料/数据中台体系建设方案.pdf' 到企业记忆，别名为 @数据中台体系建设方案",
+        upload_adapter=FakeUploadAdapter(
+            NaturalFileUploadResult(
+                success=False,
+                failed_reason="parser_failed",
+                error_type="parser_failed",
+                error_message="pdf parser unavailable",
+            )
+        ),
+        real_upload_enabled=True,
+    )
+
+    assert response is not None
+    assert response.diagnostics["import_failed_reason"] == "parser_failed"
+    assert response.diagnostics["natural_import_context"]["can_claim_file_remembered"] is False
+    assert "文件我已经记下了" not in response.final_response
+    assert "别名：@数据中台体系建设方案" not in response.final_response
+    assert "/Users/vc/Documents" not in response.final_response
+
+
+def test_pending_workspace_confirmation_does_not_block_bound_success_but_failed_import_stays_safe():
+    diagnostics = _bound_success_diagnostics()
+    diagnostics["workspace_context"]["needs_user_confirmation"] = True
+    diagnostics["workspace_context"]["confidence"] = "low"
+    rendered = render_natural_file_import_response(diagnostics)
+
+    failed = dict(diagnostics)
+    failed["ingestion_status"] = "failed"
+    failed["import_failed_reason"] = "file_not_found"
+    failed["document_id"] = None
+    failed["version_id"] = None
+    failed["alias_persisted"] = False
+    failed["alias_resolution"] = {
+        "status": "not_bound",
+        "alias": "测试文件",
+        "resolved_document_id": None,
+        "resolved_version_id": None,
+    }
+    failed_rendered = render_natural_file_import_response(failed)
+
+    assert "文件我已经记下了" in rendered
+    assert "工作区：测试项目" in rendered
+    assert "文件我已经记下了" not in failed_rendered
+    assert "别名：@测试文件" not in failed_rendered
 
 
 def test_run_agent_persists_natural_import_alias_as_bound_and_continuity(tmp_path):
@@ -473,7 +750,7 @@ def test_runtime_response_keeps_import_diagnostics_out_of_evidence_and_sets_safe
     assert response.diagnostics["snapshot_as_answer"] is False
     assert response.diagnostics["transcript_as_fact"] is False
     assert response.diagnostics["requires_retrieval_evidence"] is True
-    assert "工作区和别名只是定位信息" in response.final_response
+    assert "导入状态、工作区和别名都不是文件内容证据" in response.final_response
     assert "retrieval evidence 和 citation" in response.final_response
     assert "import_diagnostics_as_retrieval_evidence=false" not in response.final_response
     assert "facts_as_answer=false" not in response.final_response
