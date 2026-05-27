@@ -107,11 +107,10 @@ def _render_import_failure(diagnostics: dict[str, Any]) -> list[str]:
         "",
         "但我现在无法读取到这个文件。通常是因为这个路径对 Hermes 后端不可见。",
         "",
-        "你可以把文件放到 Hermes 授权导入目录，例如：",
-        "/Users/hermes/import_samples/",
+        "你可以把文件放到 Hermes 授权导入目录，或让运维把该目录加入授权导入范围。",
         "",
         "然后再对我说：",
-        "帮我导入这个文件：/Users/hermes/import_samples/文件名.docx。",
+        "帮我导入这个文件：<授权目录中的文件名.docx>。",
     ]
 
 

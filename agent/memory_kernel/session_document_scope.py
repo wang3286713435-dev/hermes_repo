@@ -485,37 +485,83 @@ class SessionDocumentScopeStore:
     def _discover_file_candidates(self, session_key: str, query: str) -> list[dict[str, Any]]:
         if not self._FILE_DISCOVERY_RE.search(query or ""):
             return []
-        aliases = self._session_aliases(session_key)
+        aliases = self._discoverable_alias_bindings(session_key)
         if not aliases:
             return []
         query_tokens = self._discovery_tokens(query)
-        candidates: list[tuple[int, str, FileAliasBinding]] = []
-        for alias, binding in aliases.items():
+        candidates: list[tuple[int, str, FileAliasBinding, str]] = []
+        for alias, (binding, source) in aliases.items():
             haystack = self._discovery_text(alias, binding)
             score = sum(1 for token in query_tokens if token and token in haystack)
             if score > 0:
-                candidates.append((score, alias, binding))
+                candidates.append((score, alias, binding, source))
         if not candidates and len(aliases) == 1:
-            alias, binding = next(iter(aliases.items()))
-            candidates.append((0, alias, binding))
+            alias, (binding, source) = next(iter(aliases.items()))
+            candidates.append((0, alias, binding, source))
         candidates.sort(key=lambda item: (-item[0], item[1]))
         return [
             {
                 "alias": alias,
                 "document_id": binding.document_id,
                 "version_id": binding.version_id,
-                "title": binding.title,
-                "source_name": binding.source_name,
+                "title": self._safe_file_candidate_text(binding.title),
+                "source_name": self._safe_file_candidate_text(binding.source_name),
                 "workspace_id": binding.workspace_id,
                 "workspace_name": binding.workspace_name,
                 "workspace_type": binding.workspace_type,
                 "document_category": binding.document_category,
                 "workspace_confidence": binding.workspace_confidence,
                 "workspace_needs_user_confirmation": binding.workspace_needs_user_confirmation,
-                "match_reason": "session_alias_fuzzy_match" if score > 0 else "single_session_alias_candidate",
+                "match_reason": self._file_discovery_match_reason(score, source),
             }
-            for score, alias, binding in candidates[:5]
+            for score, alias, binding, source in candidates[:5]
         ]
+
+    def _discoverable_alias_bindings(self, session_key: str) -> dict[str, tuple[FileAliasBinding, str]]:
+        bindings: dict[str, tuple[FileAliasBinding, str]] = {
+            alias: (binding, "session_alias")
+            for alias, binding in self._session_aliases(session_key).items()
+        }
+        owner_key, _, owner_persistent = self._continuity_owner_context(session_key)
+        registry = self._alias_continuity if owner_persistent else self._alias_continuity_ephemeral
+        for alias in list(registry.get(owner_key, {}).keys()):
+            normalized_alias = self._normalize_alias(alias)
+            if normalized_alias in bindings:
+                continue
+            candidates, _ = self._continuity_candidates(
+                owner_key=owner_key,
+                owner_persistent=owner_persistent,
+                alias=normalized_alias,
+            )
+            unique: dict[tuple[str, str | None], FileAliasBinding] = {
+                (binding.document_id, binding.version_id): binding
+                for binding in candidates
+            }
+            if len(unique) == 1:
+                bindings[normalized_alias] = (next(iter(unique.values())), "alias_continuity")
+        return bindings
+
+    def _file_discovery_match_reason(self, score: int, source: str) -> str:
+        if source == "alias_continuity":
+            return "alias_continuity_fuzzy_match" if score > 0 else "single_alias_continuity_candidate"
+        return "session_alias_fuzzy_match" if score > 0 else "single_session_alias_candidate"
+
+    def _safe_file_candidate_text(self, value: str | None) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        if lowered.startswith(("file://", "nas://", "smb://")):
+            safe = text.split("://", 1)[1].rstrip("/\\").replace("\\", "/").split("/")[-1]
+            return safe or "文件"
+        if (
+            text.startswith(("/Users/", "/Volumes/"))
+            or "\\" in text
+            or ("/" in text and re.search(r"\.[A-Za-z0-9]{2,6}$", text))
+        ):
+            safe = text.rstrip("/\\").replace("\\", "/").split("/")[-1]
+            return safe or "文件"
+        return text
 
     def _discovery_tokens(self, query: str) -> list[str]:
         normalized = re.sub(r"[@《》「」『』\"“”‘’，。！？、/\\:：;；()\[\]\s]+", " ", query or "").strip()

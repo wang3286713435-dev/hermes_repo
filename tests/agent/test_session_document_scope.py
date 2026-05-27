@@ -1247,6 +1247,65 @@ def test_session_file_discovery_matches_workspace_context_metadata():
     assert decision.trace["file_candidates"][0]["document_category"] == "人力配置 / 成本测算"
 
 
+def test_file_discovery_uses_owner_scoped_import_continuity_candidates(tmp_path):
+    storage_path = tmp_path / "session_document_scope.json"
+    store = SessionDocumentScopeStore(storage_path)
+    store.set_continuity_owner(
+        session_id="api-import-turn",
+        owner_value="gateway-chat-ctower",
+        owner_source="gateway_session_key",
+    )
+    store.finalize_pending_alias_binding(
+        session_id="api-import-turn",
+        decision=DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": "C塔人力成本测算表",
+                "alias_continuity_source": "natural_import_success",
+                "workspace_context": {
+                    "workspace_id": "ws-ctower",
+                    "workspace_name": "C塔项目",
+                    "workspace_type": "project",
+                    "document_category": "人力配置 / 成本测算",
+                    "confidence": "high",
+                    "needs_user_confirmation": False,
+                },
+            },
+        ),
+        documents=[
+            ResolvedDocument(
+                document_id="doc-cost",
+                title="C塔项目人力配置及成本测算表0506.xlsx",
+                version_id="v-cost",
+                source_name="/Users/hermes/import_samples/C塔项目人力配置及成本测算表0506.xlsx",
+            )
+        ],
+    )
+
+    reloaded = SessionDocumentScopeStore(storage_path)
+    reloaded.set_continuity_owner(
+        session_id="api-followup-drifted",
+        owner_value="gateway-chat-ctower",
+        owner_source="gateway_session_key",
+    )
+    decision = reloaded.resolve(
+        session_id="api-followup-drifted",
+        query="帮我找 C塔项目的人力成本表",
+        filters={},
+        resolver=lambda titles, filters: [],
+    )
+
+    assert decision.trace["scope_resolution_status"] == "file_discovery_candidates"
+    assert decision.suppress_retrieval is True
+    assert decision.trace["file_discovery_requires_clarification"] is True
+    assert decision.trace["file_candidates"][0]["alias"] == "C塔人力成本测算表"
+    assert decision.trace["file_candidates"][0]["workspace_name"] == "C塔项目"
+    assert decision.trace["file_candidates"][0]["document_category"] == "人力配置 / 成本测算"
+    assert decision.trace["file_candidates"][0]["match_reason"] == "alias_continuity_fuzzy_match"
+    assert "document_id" not in decision.filters
+
+
 def test_session_file_discovery_no_candidate_suppresses_retrieval_with_missing_evidence_boundary():
     store = SessionDocumentScopeStore()
 
@@ -1954,6 +2013,112 @@ def test_alias_scope_overrides_stale_nested_retrieval_trace_contamination_when_e
     assert governed["retrieval_trace"]["third_document_mixed"] is False
     assert governed["retrieval_trace"]["third_document_mixed_document_ids"] == []
     assert governed["context_scope"]["third_document_contamination"] is False
+
+
+def test_alias_scope_preserves_resolved_alias_diagnostics_when_imported_evidence_is_in_scope():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(chunk_id="a1", document_id="doc-a", version_id="v1", text="A evidence"),
+        ],
+        citations=[
+            KernelCitation(document_id="doc-a", version_id="v1", chunk_id="a1"),
+        ],
+        backend="fake",
+        trace={
+            "alias_resolution": {
+                "status": "alias_missing",
+                "alias": "测试文件",
+                "resolved_document_id": None,
+                "alias_missing": True,
+            },
+            "alias_missing": True,
+            "retrieval_trace": {
+                "alias_resolution": {
+                    "status": "alias_missing",
+                    "alias": "测试文件",
+                    "resolved_document_id": None,
+                    "alias_missing": True,
+                },
+                "alias_missing": True,
+            },
+        },
+    )
+    decision = DocumentScopeDecision(
+        filters={"document_id": "doc-a", "version_id": "v1"},
+        trace={
+            "scope_resolution_status": "alias_resolved",
+            "document_scope_source": "file_alias_continuity",
+            "alias_missing": False,
+            "alias_resolution": {
+                "status": "alias_resolved",
+                "alias": "测试文件",
+                "resolved_document_id": "doc-a",
+                "resolved_version_id": "v1",
+                "resolved_title": "测试文件.xlsx",
+                "alias_missing": False,
+            },
+        },
+        allowed_document_ids=["doc-a"],
+        cross_document_allowed=False,
+    )
+
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    governed = kernel._with_context_governance_trace(retrieval.trace, retrieval, decision)
+
+    assert governed["retrieval_evidence_document_ids"] == ["doc-a"]
+    assert governed["alias_missing"] is False
+    assert governed["alias_resolution"]["status"] == "alias_resolved"
+    assert governed["alias_resolution"]["resolved_document_id"] == "doc-a"
+    assert governed["retrieval_trace"]["alias_missing"] is False
+    assert governed["retrieval_trace"]["alias_resolution"]["status"] == "alias_resolved"
+    assert governed["alias_diagnostics_consistency"] == "scope_alias_confirmed_by_retrieval_evidence"
+
+
+def test_alias_scope_does_not_silently_restore_alias_diagnostics_when_evidence_is_out_of_scope():
+    retrieval = RetrievalOutput(
+        items=[
+            KernelItem(chunk_id="x1", document_id="doc-x", version_id="vx", text="X evidence"),
+        ],
+        citations=[],
+        backend="fake",
+        trace={
+            "alias_resolution": {
+                "status": "alias_missing",
+                "alias": "测试文件",
+                "resolved_document_id": None,
+                "alias_missing": True,
+            },
+            "alias_missing": True,
+        },
+    )
+    decision = DocumentScopeDecision(
+        filters={"document_id": "doc-a", "version_id": "v1"},
+        trace={
+            "scope_resolution_status": "alias_resolved",
+            "document_scope_source": "file_alias_continuity",
+            "alias_missing": False,
+            "alias_resolution": {
+                "status": "alias_resolved",
+                "alias": "测试文件",
+                "resolved_document_id": "doc-a",
+                "resolved_version_id": "v1",
+                "resolved_title": "测试文件.xlsx",
+                "alias_missing": False,
+            },
+        },
+        allowed_document_ids=["doc-a"],
+        cross_document_allowed=False,
+    )
+
+    kernel = MemoryKernel.__new__(MemoryKernel)
+    governed = kernel._with_context_governance_trace(retrieval.trace, retrieval, decision)
+
+    assert governed["alias_missing"] is True
+    assert governed["alias_resolution"]["status"] == "alias_missing"
+    assert governed["third_document_contamination"] is True
+    assert governed["third_document_mixed_document_ids"] == ["doc-x"]
+    assert governed["alias_diagnostics_consistency"] == "scope_alias_not_confirmed_by_retrieval_evidence"
+    assert "unexpected_document_id" in governed["contamination_flags"]
 
 
 def test_compare_scope_does_not_flag_third_document_when_evidence_is_subset():

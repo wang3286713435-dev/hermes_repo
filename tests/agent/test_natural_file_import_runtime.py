@@ -446,11 +446,16 @@ def test_file_not_found_response_is_human_readable_without_diagnostics_dump():
     assert "我识别到你想导入一份文件" in rendered
     assert "C塔项目 / 人力配置 / 成本测算" in rendered
     assert "无法读取到这个文件" in rendered
-    assert "/Users/hermes/import_samples/" in rendered
+    assert "授权导入目录" in rendered
     assert "Natural file import diagnostics:" not in rendered
     assert "document_id=" not in rendered
     assert "upload_adapter_status" not in rendered
     assert "/Users/private" not in rendered
+    assert "/Users/" not in rendered
+    assert "/Volumes/" not in rendered
+    assert "file://" not in rendered
+    assert "nas://" not in rendered
+    assert "smb://" not in rendered
 
 
 def test_runtime_response_keeps_import_diagnostics_out_of_evidence_and_sets_safety_flags():

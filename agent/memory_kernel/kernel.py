@@ -367,6 +367,11 @@ class MemoryKernel:
             enriched["transcript_as_fact"] = False
         evidence_document_ids = self._returned_document_ids(retrieval.items, retrieval.citations)
         enriched["retrieval_evidence_document_ids"] = evidence_document_ids
+        self._sync_alias_diagnostics_with_scope_evidence(
+            enriched,
+            scope_decision,
+            evidence_document_ids,
+        )
         enriched["history_memory_used"] = bool(scope_decision.trace.get("history_memory_used", False))
         enriched["history_memory_as_evidence"] = False
         context_scope = dict(enriched.get("context_scope") or {})
@@ -388,6 +393,48 @@ class MemoryKernel:
             scope_decision=scope_decision,
         )
         return enriched
+
+    def _sync_alias_diagnostics_with_scope_evidence(
+        self,
+        trace: dict,
+        scope_decision: DocumentScopeDecision,
+        evidence_document_ids: list[str],
+    ) -> None:
+        scope_alias = (scope_decision.trace or {}).get("alias_resolution")
+        if not isinstance(scope_alias, dict):
+            return
+        scope_status = str(scope_alias.get("status") or "")
+        if scope_status not in {
+            "alias_resolved",
+            "alias_bound",
+            "multi_document_alias_resolved",
+        }:
+            return
+        allowed_ids = set(scope_decision.allowed_document_ids or [])
+        evidence_ids = set(evidence_document_ids or [])
+        evidence_confirms_scope = bool(evidence_ids) and (not allowed_ids or evidence_ids.issubset(allowed_ids))
+        if not evidence_confirms_scope:
+            trace["alias_diagnostics_consistency"] = "scope_alias_not_confirmed_by_retrieval_evidence"
+            return
+
+        existing_alias = trace.get("alias_resolution") if isinstance(trace.get("alias_resolution"), dict) else {}
+        merged_alias = dict(existing_alias or {})
+        merged_alias.update(scope_alias)
+        merged_alias["alias_missing"] = False
+        trace["alias_resolution"] = merged_alias
+        trace["alias_missing"] = False
+        trace["alias_diagnostics_consistency"] = "scope_alias_confirmed_by_retrieval_evidence"
+        for nested_name in ("retrieval_trace", "context_scope"):
+            nested = trace.get(nested_name)
+            if not isinstance(nested, dict):
+                continue
+            nested_alias = nested.get("alias_resolution") if isinstance(nested.get("alias_resolution"), dict) else {}
+            nested_merged = dict(nested_alias or {})
+            nested_merged.update(scope_alias)
+            nested_merged["alias_missing"] = False
+            nested["alias_resolution"] = nested_merged
+            nested["alias_missing"] = False
+            nested["alias_diagnostics_consistency"] = "scope_alias_confirmed_by_retrieval_evidence"
 
     def _with_facts_context_trace(
         self,

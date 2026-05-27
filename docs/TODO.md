@@ -1,5 +1,11 @@
 # TODO
 
+## Phase 2.116d
+
+- Fixed the correct-version live No-Go follow-up blockers locally: alias diagnostics now remain resolved only when returned evidence confirms the imported alias scope, import failure guidance no longer prints hardcoded raw local paths, and fuzzy discovery can surface owner-scoped natural import continuity candidates after session drift.
+- Verification: targeted red/green tests `4 passed`; py_compile passed; natural import / flow / session scope / structured citation / file steward regression `138 passed`; `git diff --check` passed.
+- No OpenWebUI / 8642 live validation in this turn. Next: Codex B review, then Codex C reruns Phase 2.116 Case 1-4 before any stable closeout.
+
 ## Phase 2.116c
 
 - Fixed remaining Phase 2.116 live No-Go root causes locally: alias-scoped retrieval now normalizes stale nested `third_document_contamination` fields when actual returned evidence is in scope, and fuzzy discovery / active document / evidence / citation display paths now sanitize raw local path exits.
