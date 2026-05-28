@@ -26,6 +26,10 @@ _RAW_LOCAL_PATH_RE = re.compile(
     r"(?:file://|nas://|smb://|/Users/|/Volumes/|/private/|/var/folders/)",
     re.IGNORECASE,
 )
+_RAW_STORAGE_PATH_VALUE_RE = re.compile(
+    r"(?:(?:file|nas|smb)://[^\s，。；;、\]\)）]+|(?:/Users|/Volumes|/private|/var/folders)(?:/[^\s，。；;、\]\)）]+)+)",
+    re.IGNORECASE,
+)
 _SUCCESS_CLAIM_RE = re.compile(
     r"(文件我已经记下了|导入成功|已经导入|已导入|别名：@|后续你可以直接问|已完成别名绑定|别名已绑定)"
 )
@@ -325,6 +329,19 @@ def validate_natural_import_response(context: dict[str, Any], candidate_response
     return response
 
 
+def sanitize_user_visible_storage_paths(text: str) -> str:
+    """Replace local/NAS storage paths in user-visible text with safe filenames."""
+
+    def _replacement(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        normalized = re.sub(r"^(?:file|nas|smb)://", "", raw, flags=re.IGNORECASE)
+        normalized = normalized.replace("\\", "/").rstrip("/").strip()
+        parts = [part for part in normalized.split("/") if part]
+        return parts[-1] if parts else "文件"
+
+    return _RAW_STORAGE_PATH_VALUE_RE.sub(_replacement, text or "")
+
+
 def build_natural_import_llm_messages(context: dict[str, Any]) -> list[dict[str, str]]:
     """Build the prompt payload used by the Hermes LLM natural import response path."""
 
@@ -369,6 +386,10 @@ def _natural_import_response_unsafe(context: dict[str, Any], response: str) -> b
         return True
     if not context.get("can_claim_alias_bound") and "别名：@" in response:
         return True
+    if context.get("can_claim_alias_bound"):
+        alias_text = _display_value(context.get("suggested_alias"), fallback="")
+        if alias_text.startswith("@") and alias_text not in response:
+            return True
     return False
 
 

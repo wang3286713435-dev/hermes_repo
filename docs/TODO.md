@@ -1,5 +1,13 @@
 # TODO
 
+## Phase 2.119d
+
+- 本地最小修复已完成，待 Codex B review；不得直接进入 runtime candidate / Phase 2.120。
+- Natural import success validator 已要求 safe bound alias 在用户可见回复中明确出现 `@alias`，否则 fallback 到安全成功模板。
+- Final assistant response 已增加 raw storage path sanitizer：保留 citations / evidence refs，但不允许 `/Users/...`、`/Volumes/...`、`file://`、`nas://`、`smb://` 进入最终用户输出。
+- 验证：py_compile passed；natural import runtime / flow / session scope regression `140 passed`；legacy parser tests `28 passed`；`git diff --check` passed。
+- 下一步：Codex B review；通过后准备 `phase-2.119d-live-output-safety-runtime-candidate` 并交 Codex C / 测试机 OpenWebUI 复验。
+
 ## Phase 2.119c
 
 - Codex B review accepted the local live fuzzy evidence fix; prepare a clean selective runtime candidate for Codex C / test-machine validation.

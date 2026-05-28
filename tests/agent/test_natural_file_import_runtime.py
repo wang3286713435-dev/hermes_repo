@@ -9,6 +9,7 @@ from agent.memory_kernel.natural_file_import_runtime import (
     maybe_handle_temporary_attachment_boundary,
     maybe_handle_natural_file_import,
     render_natural_file_import_response,
+    sanitize_user_visible_storage_paths,
     validate_natural_import_response,
 )
 from agent.memory_kernel.natural_file_upload_adapter import NaturalFileUploadResult
@@ -43,8 +44,10 @@ class FakeNaturalImportLLM:
 
 
 class FakeBodyRetrieval:
-    def __init__(self):
+    def __init__(self, source_name: str = "C塔智能化专业标准.docx", source_uri: str | None = None):
         self.requests = []
+        self.source_name = source_name
+        self.source_uri = source_uri
 
     def resolve_document_titles(self, titles, filters):
         if "C塔智能化标准" in titles:
@@ -53,7 +56,7 @@ class FakeBodyRetrieval:
                     "document_id": "doc-standard",
                     "version_id": "ver-standard",
                     "title": "C塔智能化标准",
-                    "source_name": "C塔智能化专业标准.docx",
+                    "source_name": self.source_name,
                 }
             ]
         return []
@@ -67,7 +70,8 @@ class FakeBodyRetrieval:
                     document_id=request.filters.get("document_id", "doc-standard"),
                     version_id=request.filters.get("version_id", "ver-standard"),
                     text="C塔智能化专业采用数字化交付标准、BIM模型交付标准和系统联调验收标准。",
-                    source_name="C塔智能化专业标准.docx",
+                    source_name=self.source_name,
+                    source_uri=self.source_uri,
                     metadata={"parser": "docx", "source_type": "docx"},
                 )
             ],
@@ -76,7 +80,8 @@ class FakeBodyRetrieval:
                     chunk_id="chunk-standard-1",
                     document_id=request.filters.get("document_id", "doc-standard"),
                     version_id=request.filters.get("version_id", "ver-standard"),
-                    source_name="C塔智能化专业标准.docx",
+                    source_name=self.source_name,
+                    source_uri=self.source_uri,
                     quote_text="C塔智能化专业采用数字化交付标准、BIM模型交付标准和系统联调验收标准。",
                     metadata={"parser": "docx", "source_type": "docx"},
                 )
@@ -218,6 +223,31 @@ def test_alias_followup_retrieval_returns_body_evidence_and_citation(tmp_path):
     assert "C塔智能化专业标准.docx" in result.context_block
 
 
+def test_alias_followup_retrieval_sanitizes_raw_path_source_names(tmp_path):
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeBodyRetrieval(
+        source_name="/Users/hermes/import_samples/C塔智能化专业标准.docx",
+        source_uri="file:///Users/hermes/import_samples/C塔智能化专业标准.docx",
+    )
+    kernel.retrieval = fake_retrieval
+
+    kernel.start_turn(KernelRequest(query="把《C塔智能化标准》设为 @C塔智能化标准", session_id="s1"))
+    result = kernel.start_turn(
+        KernelRequest(
+            query="围绕 @C塔智能化标准 回答 C塔智能化专业的标准有哪些？请给 citation",
+            session_id="s1",
+        )
+    )
+
+    assert result.retrieval.items
+    assert result.retrieval.citations
+    assert "[C1]" in result.context_block
+    assert "C塔智能化专业标准.docx" in result.context_block
+    assert "/Users/hermes/import_samples" not in result.context_block
+    assert "file://" not in result.context_block
+
+
 def test_single_imported_candidate_followup_without_alias_scopes_body_retrieval_and_citation(tmp_path):
     kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
     kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
@@ -265,6 +295,52 @@ def test_single_imported_candidate_followup_without_alias_scopes_body_retrieval_
     assert fake_retrieval.requests[-1].filters["version_id"] == "ver-standard"
     assert "[C1]" in result.context_block
     assert "C塔智能化专业标准.docx" in result.context_block
+
+
+def test_single_imported_candidate_retrieval_sanitizes_raw_path_source_names(tmp_path):
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeBodyRetrieval(
+        source_name="/Volumes/company/import_samples/C塔智能化专业标准.docx",
+        source_uri="smb://nas/company/import_samples/C塔智能化专业标准.docx",
+    )
+    kernel.retrieval = fake_retrieval
+    kernel.document_scope.finalize_pending_alias_binding(
+        session_id="s1",
+        decision=DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": "导入文件",
+                "alias_continuity_source": "natural_import_success",
+                "workspace_context": {
+                    "workspace_name": "授权导入",
+                    "workspace_type": "project",
+                    "document_category": "导入文件",
+                    "confidence": "high",
+                    "needs_user_confirmation": False,
+                },
+            },
+        ),
+        documents=[
+            {
+                "document_id": "doc-standard",
+                "title": "导入文件.docx",
+                "version_id": "ver-standard",
+                "source_name": "/Volumes/company/import_samples/导入文件.docx",
+            }
+        ],
+    )
+
+    result = kernel.start_turn(KernelRequest(query="C塔智能化专业的标准有哪些？", session_id="s1"))
+
+    assert result.trace["scope_resolution_status"] == "file_discovery_single_candidate_scoped"
+    assert result.retrieval.items
+    assert result.retrieval.citations
+    assert "[C1]" in result.context_block
+    assert "C塔智能化专业标准.docx" in result.context_block
+    assert "/Volumes/company/import_samples" not in result.context_block
+    assert "smb://" not in result.context_block
 
 
 def test_import_prompt_defaults_to_disabled_and_does_not_call_adapter():
@@ -476,6 +552,22 @@ def test_llm_context_injection_receives_natural_import_context_and_success_passe
     assert diagnostics["natural_import_response_safety_fallback"] is False
 
 
+def test_bound_success_llm_response_without_alias_falls_back_to_alias_reporting():
+    diagnostics = _bound_success_diagnostics()
+    llm = FakeNaturalImportLLM("我已把这份文件接入当前会话。回答内容仍需要 retrieval evidence 和 citation。")
+
+    response = render_natural_file_import_response(
+        diagnostics,
+        llm_response_generator=llm,
+    )
+
+    assert response != llm.reply
+    assert "别名：@测试文件" in response
+    assert "@测试文件 这份文件有哪些重点？" in response
+    assert diagnostics["natural_import_response_path"] == "safety_fallback"
+    assert diagnostics["natural_import_response_safety_fallback"] is True
+
+
 def test_llm_failure_response_stays_natural_and_safe():
     llm = FakeNaturalImportLLM("我识别到你想导入文件，但这次没有完成导入，所以我不能说已经记下。请放入授权目录后再试。")
 
@@ -636,6 +728,24 @@ def test_raw_path_safety_validator_sanitizes_llm_output_even_on_success():
 
     assert "/Users/example/private" not in guarded
     assert "别名：@测试文件" in guarded
+
+
+def test_user_visible_storage_path_sanitizer_preserves_filename_and_citations():
+    response = (
+        "依据 [C1] /Users/example/private/C塔智能化专业标准.docx：内容如下。\n"
+        "另见 file:///Volumes/company/share/附件十一.docx 和 smb://nas/share/会议纪要.docx。"
+    )
+
+    sanitized = sanitize_user_visible_storage_paths(response)
+
+    assert "[C1]" in sanitized
+    assert "C塔智能化专业标准.docx" in sanitized
+    assert "附件十一.docx" in sanitized
+    assert "会议纪要.docx" in sanitized
+    assert "/Users/example/private" not in sanitized
+    assert "/Volumes/company/share" not in sanitized
+    assert "file://" not in sanitized
+    assert "smb://" not in sanitized
 
 
 def test_pdf_parser_failure_is_safe_failure_without_success_or_raw_path():

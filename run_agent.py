@@ -89,6 +89,7 @@ from agent.memory_kernel.natural_file_import_runtime import (
     maybe_handle_temporary_attachment_boundary,
     maybe_handle_natural_file_import,
     render_natural_file_import_response,
+    sanitize_user_visible_storage_paths,
 )
 from agent.memory_kernel.natural_file_upload_adapter import FeatureFlaggedHermesMemoryUploadAdapter
 from agent.memory_kernel.session_document_scope import DocumentScopeDecision, ResolvedDocument
@@ -12253,6 +12254,19 @@ class AIAgent:
                     logger.info("Personnel-only answer guard replaced final response with safe fallback")
             except Exception as exc:
                 logger.warning("Personnel-only answer guard failed: %s", exc)
+
+        if final_response and not interrupted:
+            try:
+                _sanitized_response = sanitize_user_visible_storage_paths(final_response)
+                if _sanitized_response != final_response:
+                    final_response = _sanitized_response
+                    for _msg in reversed(messages):
+                        if isinstance(_msg, dict) and _msg.get("role") == "assistant" and not _msg.get("tool_calls"):
+                            _msg["content"] = final_response
+                            break
+                    logger.info("Raw storage path guard sanitized final response")
+            except Exception as exc:
+                logger.warning("Raw storage path guard failed: %s", exc)
 
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.
