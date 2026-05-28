@@ -1,5 +1,13 @@
 # TODO
 
+## Phase 2.119c
+
+- Codex B review accepted the local live fuzzy evidence fix; prepare a clean selective runtime candidate for Codex C / test-machine validation.
+- Runtime candidate scope is limited to single high-confidence imported candidate scoping for implied standards questions without explicit `@alias`.
+- Candidate must preserve protections: confirmation-required single candidates and multiple plausible candidates still suppress retrieval and ask for confirmation.
+- Verification before candidate: py_compile passed; natural import runtime / flow / session scope regression `136 passed`; legacy parser tests `28 passed`; `git diff --check` passed.
+- Next: Codex C / test machine updates to `phase-2.119c-live-fuzzy-evidence-runtime-candidate`, restarts 8642, and reruns OpenWebUI employee file governance validation. Do not enter Phase 2.120 or claim stable freeze.
+
 ## Phase 2.118d
 
 - Implemented post-import alias verification gate for natural import success claims.

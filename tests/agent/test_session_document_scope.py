@@ -1282,6 +1282,50 @@ def test_session_file_discovery_handles_natural_standard_question_with_safe_cand
     assert store.get("s1").active_document_id == "doc-standard"
 
 
+def test_session_file_discovery_scopes_single_imported_candidate_without_fuzzy_token_match():
+    store = SessionDocumentScopeStore()
+    store.finalize_pending_alias_binding(
+        session_id="s1",
+        decision=DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": "导入文件",
+                "alias_continuity_source": "natural_import_success",
+                "workspace_context": {
+                    "workspace_name": "授权导入",
+                    "workspace_type": "project",
+                    "document_category": "导入文件",
+                    "confidence": "high",
+                    "needs_user_confirmation": False,
+                },
+            },
+        ),
+        documents=[
+            ResolvedDocument(
+                document_id="doc-standard",
+                title="导入文件.docx",
+                version_id="v-standard",
+                source_name="导入文件.docx",
+            )
+        ],
+    )
+
+    decision = store.resolve(
+        session_id="s1",
+        query="C塔智能化专业的标准有哪些？",
+        filters={},
+        resolver=lambda titles, filters: [],
+    )
+
+    assert decision.suppress_retrieval is False
+    assert decision.filters["document_id"] == "doc-standard"
+    assert decision.filters["version_id"] == "v-standard"
+    assert decision.allowed_document_ids == ["doc-standard"]
+    assert decision.trace["scope_resolution_status"] == "file_discovery_single_candidate_scoped"
+    assert decision.trace["file_candidates"][0]["match_reason"] == "single_session_alias_candidate"
+
+
 def test_session_file_discovery_keeps_multiple_natural_standard_candidates_as_clarification():
     store = SessionDocumentScopeStore()
     store._session_aliases("s1")["C塔智能化标准"] = FileAliasBinding(

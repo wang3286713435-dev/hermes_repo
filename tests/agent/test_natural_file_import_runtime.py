@@ -218,6 +218,55 @@ def test_alias_followup_retrieval_returns_body_evidence_and_citation(tmp_path):
     assert "C塔智能化专业标准.docx" in result.context_block
 
 
+def test_single_imported_candidate_followup_without_alias_scopes_body_retrieval_and_citation(tmp_path):
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeBodyRetrieval()
+    kernel.retrieval = fake_retrieval
+    kernel.document_scope.finalize_pending_alias_binding(
+        session_id="s1",
+        decision=DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_bind_pending_current_retrieval",
+                "alias": "导入文件",
+                "alias_continuity_source": "natural_import_success",
+                "workspace_context": {
+                    "workspace_name": "授权导入",
+                    "workspace_type": "project",
+                    "document_category": "导入文件",
+                    "confidence": "high",
+                    "needs_user_confirmation": False,
+                },
+            },
+        ),
+        documents=[
+            {
+                "document_id": "doc-standard",
+                "title": "导入文件.docx",
+                "version_id": "ver-standard",
+                "source_name": "导入文件.docx",
+            }
+        ],
+    )
+
+    result = kernel.start_turn(
+        KernelRequest(
+            query="C塔智能化专业的标准有哪些？",
+            session_id="s1",
+        )
+    )
+
+    assert result.trace["scope_resolution_status"] == "file_discovery_single_candidate_scoped"
+    assert result.trace["retrieval_evidence_document_ids"] == ["doc-standard"]
+    assert result.retrieval.items
+    assert result.retrieval.citations
+    assert fake_retrieval.requests[-1].filters["document_id"] == "doc-standard"
+    assert fake_retrieval.requests[-1].filters["version_id"] == "ver-standard"
+    assert "[C1]" in result.context_block
+    assert "C塔智能化专业标准.docx" in result.context_block
+
+
 def test_import_prompt_defaults_to_disabled_and_does_not_call_adapter():
     adapter = FakeUploadAdapter(_success_result())
 

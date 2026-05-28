@@ -579,9 +579,16 @@ class SessionDocumentScopeStore:
         if not candidate.get("document_id"):
             return None
         match_reason = str(candidate.get("match_reason") or "")
-        if "fuzzy_match" not in match_reason:
+        if "fuzzy_match" not in match_reason and not self._is_safe_single_file_candidate(candidate):
             return None
         return candidate
+
+    def _is_safe_single_file_candidate(self, candidate: dict[str, Any]) -> bool:
+        confidence = str(candidate.get("workspace_confidence") or "").strip().lower()
+        needs_confirmation = candidate.get("workspace_needs_user_confirmation")
+        if needs_confirmation is True:
+            return False
+        return confidence in {"high", "medium"}
 
     def _discoverable_alias_bindings(self, session_key: str) -> dict[str, tuple[FileAliasBinding, str]]:
         bindings: dict[str, tuple[FileAliasBinding, str]] = {
