@@ -94,6 +94,10 @@ class SessionDocumentScopeStore:
         r"(?:文件|文档|资料|材料)[^，。！？\n]{0,24}找出来|"
         r"(?:帮我)?找[^，。！？\n]{0,40}(?:文件|文档|资料|材料|表格|表|清单)(?![里中内的]))"
     )
+    _IMPLIED_FILE_DISCOVERY_RE = re.compile(
+        r"(标准有哪些|有哪些[^，。！？\n]{0,24}标准|哪些[^，。！？\n]{0,24}标准|"
+        r"(?:项目|专业|工程)[^，。！？\n]{0,18}标准)"
+    )
     _PROJECT_RE = re.compile(r"(?:项目|project)\s*[：:]\s*(.+?)(?=\s*(?:任务|task)\s*[：:]|[，。！？\n]|$)", re.IGNORECASE)
     _TASK_RE = re.compile(r"(?:任务|task)\s*[：:]\s*(.+?)(?=[，。！？\n]|$)", re.IGNORECASE)
 
@@ -323,6 +327,50 @@ class SessionDocumentScopeStore:
 
         discovery_candidates = self._discover_file_candidates(session_key, query or "")
         if discovery_candidates:
+            scoped_candidate = self._single_scoped_file_candidate(query or "", discovery_candidates)
+            if scoped_candidate:
+                document_id = str(scoped_candidate.get("document_id") or "")
+                version_id = scoped_candidate.get("version_id")
+                title = (
+                    scoped_candidate.get("title")
+                    or scoped_candidate.get("source_name")
+                    or scoped_candidate.get("alias")
+                    or "文件"
+                )
+                new_state = DocumentScopeState(
+                    active_document_id=document_id,
+                    active_document_title=str(title),
+                    active_document_version_id=str(version_id) if version_id else None,
+                    active_project=state.active_project,
+                    active_task=state.active_task,
+                    scope_source="file_discovery",
+                    updated_at=self._now(),
+                )
+                self._states[session_key] = new_state
+                self._save()
+                scoped_filters = self._scoped_filters(
+                    incoming_filters,
+                    document_id,
+                    str(version_id) if version_id else None,
+                )
+                return self._decision(
+                    filters=scoped_filters,
+                    state=new_state,
+                    source="file_discovery",
+                    status="file_discovery_single_candidate_scoped",
+                    changed=state.active_document_id != document_id,
+                    allowed_document_ids=[document_id],
+                    cross_document_allowed=False,
+                    suppress_retrieval=False,
+                    extra_trace={
+                        "file_discovery_requires_clarification": False,
+                        "file_candidates": discovery_candidates,
+                        "alias_candidates": discovery_candidates,
+                        "single_file_candidate_scoped": True,
+                        "requires_retrieval_evidence": True,
+                        "missing_evidence_policy": "Missing Evidence",
+                    },
+                )
             return self._decision(
                 filters=incoming_filters,
                 state=state,
@@ -483,10 +531,13 @@ class SessionDocumentScopeStore:
         return (alias or "").strip().lstrip("@")
 
     def _discover_file_candidates(self, session_key: str, query: str) -> list[dict[str, Any]]:
-        if not self._FILE_DISCOVERY_RE.search(query or ""):
-            return []
         aliases = self._discoverable_alias_bindings(session_key)
         if not aliases:
+            return []
+        if not (
+            self._FILE_DISCOVERY_RE.search(query or "")
+            or self._IMPLIED_FILE_DISCOVERY_RE.search(query or "")
+        ):
             return []
         query_tokens = self._discovery_tokens(query)
         candidates: list[tuple[int, str, FileAliasBinding, str]] = []
@@ -516,6 +567,21 @@ class SessionDocumentScopeStore:
             }
             for score, alias, binding, source in candidates[:5]
         ]
+
+    def _single_scoped_file_candidate(self, query: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if len(candidates) != 1:
+            return None
+        if self._FILE_DISCOVERY_RE.search(query or ""):
+            return None
+        if not self._IMPLIED_FILE_DISCOVERY_RE.search(query or ""):
+            return None
+        candidate = candidates[0]
+        if not candidate.get("document_id"):
+            return None
+        match_reason = str(candidate.get("match_reason") or "")
+        if "fuzzy_match" not in match_reason:
+            return None
+        return candidate
 
     def _discoverable_alias_bindings(self, session_key: str) -> dict[str, tuple[FileAliasBinding, str]]:
         bindings: dict[str, tuple[FileAliasBinding, str]] = {
@@ -568,7 +634,26 @@ class SessionDocumentScopeStore:
         raw_tokens = [token for token in normalized.split(" ") if len(token) >= 2]
         compact = re.sub(r"\s+", "", normalized)
         tokens = list(raw_tokens)
-        for marker in ("项目", "招标", "要求", "文件", "资料", "清单", "会议", "纪要", "标准", "人力", "成本", "测算", "表格", "表"):
+        for marker in (
+            "C塔",
+            "智能化",
+            "专业",
+            "项目",
+            "招标",
+            "要求",
+            "文件",
+            "资料",
+            "清单",
+            "会议",
+            "纪要",
+            "标准",
+            "交付",
+            "人力",
+            "成本",
+            "测算",
+            "表格",
+            "表",
+        ):
             if marker in compact:
                 tokens.append(marker)
         return self._unique(tokens)

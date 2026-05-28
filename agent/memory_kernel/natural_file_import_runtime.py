@@ -60,6 +60,15 @@ _SECRET_OR_INTERNAL_RE = re.compile(
     r"(Natural file import diagnostics:|\b(document_id|version_id|chunk_count|indexed_count)\b\s*[:=]?|api[_-]?key|token|password|secret)",
     re.IGNORECASE,
 )
+_TEMP_ATTACHMENT_REF_RE = re.compile(
+    r"(这个文件|这份文件|这个附件|这份附件|附件|刚才上传|刚才拖入|刚刚上传|刚刚拖入)"
+)
+_TEMP_ATTACHMENT_STATUS_RE = re.compile(
+    r"(别名|工作区|项目|分类|保存|记住|记下|入库|收录|绑定|导入(?:了吗|没有|状态)|上传(?:了吗|没有|状态))"
+)
+_EXPLICIT_IMPORT_ACTION_RE = re.compile(
+    r"(帮我|请|麻烦)?\s*(?:导入|上传|收录|保存到|加入)\s*(?:这个文件|这份文件|这个附件|这份附件|/|file://|nas://|smb://)"
+)
 
 
 def maybe_handle_natural_file_import(
@@ -83,6 +92,52 @@ def maybe_handle_natural_file_import(
         final_response=render_natural_file_import_response(
             diagnostics,
             llm_response_generator=llm_response_generator,
+        ),
+        diagnostics=diagnostics,
+    )
+
+
+def maybe_handle_temporary_attachment_boundary(text: str) -> NaturalFileImportRuntimeResponse | None:
+    """Return a product-facing boundary for attachment metadata questions.
+
+    OpenWebUI drag/drop attachments can appear in the current model turn before
+    the user explicitly asks Hermes to import them. In that state they are only
+    temporary context; alias/workspace claims are not safe until the governed
+    import flow succeeds and post-bind verification passes.
+    """
+
+    query = str(text or "").strip()
+    if not query:
+        return None
+    if _EXPLICIT_IMPORT_ACTION_RE.search(query):
+        return None
+    if not (_TEMP_ATTACHMENT_REF_RE.search(query) and _TEMP_ATTACHMENT_STATUS_RE.search(query)):
+        return None
+    diagnostics: dict[str, Any] = {
+        "temporary_attachment_boundary": True,
+        "temporary_attachment_context_only": True,
+        "attachment_imported": False,
+        "alias_bound": False,
+        "workspace_bound": False,
+        "facts_as_answer": False,
+        "snapshot_as_answer": False,
+        "transcript_as_fact": False,
+        "requires_retrieval_evidence": True,
+        "retrieval_evidence_document_ids": [],
+        "import_diagnostics_as_retrieval_evidence": False,
+    }
+    return NaturalFileImportRuntimeResponse(
+        final_response="\n".join(
+            [
+                "这份内容目前只能视为本轮临时附件上下文。",
+                "",
+                "我还不能确认它已经进入 Hermes 记忆库，也不能说它已经绑定别名或工作区。",
+                "",
+                "如果你希望后续能按别名或工作区检索，请明确说：",
+                "帮我导入这个文件，并设为 @你的别名。",
+                "",
+                "导入完成并通过别名校验后，我再回答它已经可按别名继续使用。",
+            ]
         ),
         diagnostics=diagnostics,
     )
@@ -120,6 +175,10 @@ def build_natural_import_context(diagnostics: dict[str, Any]) -> dict[str, Any]:
         alias_resolution = {}
     alias = alias_resolution.get("alias")
     alias_status = str(alias_resolution.get("status") or diagnostics.get("alias_status") or "unknown")
+    post_verify_status = str(diagnostics.get("post_import_alias_verification_status") or "not_run")
+    post_verify_alias = diagnostics.get("post_import_alias_verification_alias")
+    post_verify_owner_source = diagnostics.get("post_import_alias_verification_owner_source")
+    post_verify_failure_reason = diagnostics.get("post_import_alias_verification_failure_reason")
     document_id = diagnostics.get("document_id")
     version_id = diagnostics.get("version_id")
     upload_succeeded = diagnostics.get("ingestion_status") == "upload_succeeded"
@@ -130,14 +189,19 @@ def build_natural_import_context(diagnostics: dict[str, Any]) -> dict[str, Any]:
         and bool(alias_resolution.get("resolved_document_id") or document_id)
         and bool(alias_resolution.get("resolved_version_id") or version_id)
     )
-    can_claim_success = bool(upload_succeeded and has_document_scope and alias_bound)
+    post_bind_verified = post_verify_status == "passed"
+    can_claim_success = bool(upload_succeeded and has_document_scope and alias_bound and post_bind_verified)
     import_failed_reason = diagnostics.get("import_failed_reason")
     if can_claim_success:
         status = "ready_for_followup"
-        status_reason = "upload_succeeded_and_alias_bound"
+        status_reason = "upload_succeeded_alias_bound_and_post_verified"
     elif upload_succeeded and has_document_scope:
         status = "import_incomplete"
-        status_reason = "alias_not_bound"
+        status_reason = (
+            "alias_post_bind_not_verified"
+            if alias_bound
+            else "alias_not_bound"
+        )
     elif import_failed_reason:
         status = "failed"
         status_reason = str(import_failed_reason)
@@ -170,6 +234,10 @@ def build_natural_import_context(diagnostics: dict[str, Any]) -> dict[str, Any]:
         "alias_status": alias_status,
         "alias": alias,
         "suggested_alias": alias_text,
+        "post_import_alias_verification_status": post_verify_status,
+        "post_import_alias_verification_alias": post_verify_alias,
+        "post_import_alias_verification_owner_source": post_verify_owner_source,
+        "post_import_alias_verification_failure_reason": post_verify_failure_reason,
         "workspace_context": workspace_context,
         "can_claim_file_remembered": can_claim_success,
         "can_claim_alias_bound": can_claim_success,
@@ -396,6 +464,10 @@ def _debug_diagnostics_lines(diagnostics: dict[str, Any]) -> list[str]:
         f"- alias_resolution={json.dumps(diagnostics.get('alias_resolution') or {}, ensure_ascii=False, sort_keys=True)}",
         f"- alias_continuity_status={diagnostics.get('alias_continuity_status')}",
         f"- alias_continuity_source={diagnostics.get('alias_continuity_source')}",
+        f"- post_import_alias_verification_status={diagnostics.get('post_import_alias_verification_status')}",
+        f"- post_import_alias_verification_alias={diagnostics.get('post_import_alias_verification_alias')}",
+        f"- post_import_alias_verification_owner_source={diagnostics.get('post_import_alias_verification_owner_source')}",
+        f"- post_import_alias_verification_failure_reason={diagnostics.get('post_import_alias_verification_failure_reason')}",
         f"- api_session_key_source={diagnostics.get('api_session_key_source')}",
         f"- history_message_count={diagnostics.get('history_message_count')}",
         "- retrieval_evidence_document_ids=[]",

@@ -1247,6 +1247,87 @@ def test_session_file_discovery_matches_workspace_context_metadata():
     assert decision.trace["file_candidates"][0]["document_category"] == "人力配置 / 成本测算"
 
 
+def test_session_file_discovery_handles_natural_standard_question_with_safe_candidate():
+    store = SessionDocumentScopeStore()
+    store._session_aliases("s1")["C塔智能化标准"] = FileAliasBinding(
+        alias="C塔智能化标准",
+        document_id="doc-standard",
+        title="C塔智能化专业标准清单.docx",
+        version_id="v-standard",
+        source_name="C塔智能化专业标准清单.docx",
+        workspace_id="ws-ctower",
+        workspace_name="C塔项目",
+        workspace_type="project",
+        document_category="智能化专业标准",
+        workspace_confidence="high",
+        workspace_needs_user_confirmation=False,
+    )
+
+    decision = store.resolve(
+        session_id="s1",
+        query="C塔智能化专业的标准有哪些？",
+        filters={},
+        resolver=lambda titles, filters: [],
+    )
+
+    assert decision.suppress_retrieval is False
+    assert decision.filters["document_id"] == "doc-standard"
+    assert decision.filters["version_id"] == "v-standard"
+    assert decision.allowed_document_ids == ["doc-standard"]
+    assert decision.trace["scope_resolution_status"] == "file_discovery_single_candidate_scoped"
+    assert decision.trace["file_discovery_requires_clarification"] is False
+    assert decision.trace["single_file_candidate_scoped"] is True
+    assert decision.trace["file_candidates"][0]["alias"] == "C塔智能化标准"
+    assert decision.trace["file_candidates"][0]["document_id"] == "doc-standard"
+    assert store.get("s1").active_document_id == "doc-standard"
+
+
+def test_session_file_discovery_keeps_multiple_natural_standard_candidates_as_clarification():
+    store = SessionDocumentScopeStore()
+    store._session_aliases("s1")["C塔智能化标准"] = FileAliasBinding(
+        alias="C塔智能化标准",
+        document_id="doc-standard-a",
+        title="C塔智能化专业标准清单.docx",
+        version_id="v-standard-a",
+        source_name="C塔智能化专业标准清单.docx",
+        workspace_id="ws-ctower",
+        workspace_name="C塔项目",
+        workspace_type="project",
+        document_category="智能化专业标准",
+        workspace_confidence="high",
+        workspace_needs_user_confirmation=False,
+    )
+    store._session_aliases("s1")["C塔智能化施工标准"] = FileAliasBinding(
+        alias="C塔智能化施工标准",
+        document_id="doc-standard-b",
+        title="C塔智能化专业施工标准.docx",
+        version_id="v-standard-b",
+        source_name="C塔智能化专业施工标准.docx",
+        workspace_id="ws-ctower",
+        workspace_name="C塔项目",
+        workspace_type="project",
+        document_category="智能化专业标准",
+        workspace_confidence="high",
+        workspace_needs_user_confirmation=False,
+    )
+
+    decision = store.resolve(
+        session_id="s1",
+        query="C塔智能化专业的标准有哪些？",
+        filters={},
+        resolver=lambda titles, filters: [],
+    )
+
+    assert decision.suppress_retrieval is True
+    assert decision.trace["scope_resolution_status"] == "file_discovery_candidates"
+    assert decision.trace["file_discovery_requires_clarification"] is True
+    assert [candidate["alias"] for candidate in decision.trace["file_candidates"]] == [
+        "C塔智能化施工标准",
+        "C塔智能化标准",
+    ]
+    assert "document_id" not in decision.filters
+
+
 def test_file_discovery_uses_owner_scoped_import_continuity_candidates(tmp_path):
     storage_path = tmp_path / "session_document_scope.json"
     store = SessionDocumentScopeStore(storage_path)

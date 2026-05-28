@@ -6,13 +6,16 @@ from agent.memory_kernel.natural_file_import import NaturalFileImportRequest
 from agent.memory_kernel.natural_file_import_runtime import (
     NaturalFileImportRuntimeResponse,
     build_natural_import_context,
+    maybe_handle_temporary_attachment_boundary,
     maybe_handle_natural_file_import,
     render_natural_file_import_response,
     validate_natural_import_response,
 )
 from agent.memory_kernel.natural_file_upload_adapter import NaturalFileUploadResult
 from agent.memory_kernel.config import MemoryKernelConfig
+from agent.memory_kernel.interfaces import KernelCitation, KernelItem, KernelRequest, RetrievalOutput
 from agent.memory_kernel.kernel import MemoryKernel
+from agent.memory_kernel.session_document_scope import DocumentScopeDecision, SessionDocumentScopeStore
 from run_agent import AIAgent
 
 
@@ -37,6 +40,52 @@ class FakeNaturalImportLLM:
     def __call__(self, context: dict) -> str:
         self.contexts.append(context)
         return self.reply
+
+
+class FakeBodyRetrieval:
+    def __init__(self):
+        self.requests = []
+
+    def resolve_document_titles(self, titles, filters):
+        if "C塔智能化标准" in titles:
+            return [
+                {
+                    "document_id": "doc-standard",
+                    "version_id": "ver-standard",
+                    "title": "C塔智能化标准",
+                    "source_name": "C塔智能化专业标准.docx",
+                }
+            ]
+        return []
+
+    def retrieve(self, request, route):
+        self.requests.append(request)
+        return RetrievalOutput(
+            items=[
+                KernelItem(
+                    chunk_id="chunk-standard-1",
+                    document_id=request.filters.get("document_id", "doc-standard"),
+                    version_id=request.filters.get("version_id", "ver-standard"),
+                    text="C塔智能化专业采用数字化交付标准、BIM模型交付标准和系统联调验收标准。",
+                    source_name="C塔智能化专业标准.docx",
+                    metadata={"parser": "docx", "source_type": "docx"},
+                )
+            ],
+            citations=[
+                KernelCitation(
+                    chunk_id="chunk-standard-1",
+                    document_id=request.filters.get("document_id", "doc-standard"),
+                    version_id=request.filters.get("version_id", "ver-standard"),
+                    source_name="C塔智能化专业标准.docx",
+                    quote_text="C塔智能化专业采用数字化交付标准、BIM模型交付标准和系统联调验收标准。",
+                    metadata={"parser": "docx", "source_type": "docx"},
+                )
+            ],
+            backend="fake",
+            sparse_retrieval_status="executed",
+            applied_filters=dict(request.filters),
+            trace={"retrieval_evidence_document_ids": [request.filters.get("document_id", "doc-standard")]},
+        )
 
 
 def _success_result() -> NaturalFileUploadResult:
@@ -70,6 +119,10 @@ def _bound_success_diagnostics(alias: str = "测试文件") -> dict:
         },
         "alias_continuity_status": "stored",
         "alias_continuity_source": "natural_import_success",
+        "post_import_alias_verification_status": "passed",
+        "post_import_alias_verification_alias": f"@{alias}",
+        "post_import_alias_verification_owner_source": "api_derived_session_id",
+        "post_import_alias_verification_failure_reason": None,
         "api_session_key_source": "api_derived_session_id",
         "history_message_count": 0,
         "retrieval_evidence_document_ids": [],
@@ -98,6 +151,71 @@ def test_non_import_prompt_is_not_intercepted():
     response = maybe_handle_natural_file_import("帮我看看 /tmp/demo.docx")
 
     assert response is None
+
+
+def test_temporary_attachment_alias_workspace_question_returns_product_boundary():
+    response = maybe_handle_temporary_attachment_boundary("这个附件现在有别名或工作区吗？")
+
+    assert response is not None
+    assert response.completed is True
+    assert response.diagnostics["temporary_attachment_boundary"] is True
+    assert response.diagnostics["facts_as_answer"] is False
+    assert response.diagnostics["retrieval_evidence_document_ids"] == []
+    assert "临时附件上下文" in response.final_response
+    assert "不能确认它已经进入 Hermes 记忆库" in response.final_response
+    assert "不能说它已经绑定别名或工作区" in response.final_response
+    assert "帮我导入这个文件" in response.final_response
+    assert "系统预设回复" not in response.final_response
+    assert "Natural file import diagnostics:" not in response.final_response
+
+
+def test_temporary_attachment_boundary_does_not_intercept_explicit_import():
+    response = maybe_handle_temporary_attachment_boundary("帮我导入这个文件：/tmp/demo.pdf")
+
+    assert response is None
+
+
+def test_temporary_attachment_boundary_can_be_skipped_when_imported_scope_exists(tmp_path):
+    agent = object.__new__(AIAgent)
+    agent.session_id = "s-imported"
+    agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    agent._memory_kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    agent._memory_kernel.document_scope.resolve(
+        session_id="s-imported",
+        query="把《C塔智能化标准》设为 @C塔智能化标准",
+        filters={},
+        resolver=FakeBodyRetrieval().resolve_document_titles,
+    )
+
+    boundary = maybe_handle_temporary_attachment_boundary("这个文件现在有别名或工作区吗？")
+
+    assert boundary is not None
+    assert agent._has_imported_file_scope_for_query("这个文件现在有别名或工作区吗？") is True
+
+
+def test_alias_followup_retrieval_returns_body_evidence_and_citation(tmp_path):
+    kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    kernel.document_scope = SessionDocumentScopeStore(tmp_path / "scope.json")
+    fake_retrieval = FakeBodyRetrieval()
+    kernel.retrieval = fake_retrieval
+
+    kernel.start_turn(KernelRequest(query="把《C塔智能化标准》设为 @C塔智能化标准", session_id="s1"))
+    result = kernel.start_turn(
+        KernelRequest(
+            query="围绕 @C塔智能化标准 回答 C塔智能化专业的标准有哪些？请给 citation",
+            session_id="s1",
+        )
+    )
+
+    assert result.retrieval.items
+    assert result.retrieval.citations
+    assert result.trace["retrieval_items"] == 1
+    assert result.trace["citations"] == 1
+    assert result.trace["retrieval_evidence_document_ids"] == ["doc-standard"]
+    assert fake_retrieval.requests[-1].filters["document_id"] == "doc-standard"
+    assert fake_retrieval.requests[-1].filters["version_id"] == "ver-standard"
+    assert "[C1]" in result.context_block
+    assert "C塔智能化专业标准.docx" in result.context_block
 
 
 def test_import_prompt_defaults_to_disabled_and_does_not_call_adapter():
@@ -156,6 +274,40 @@ def test_bound_success_response_explains_import_status_followups_and_evidence_bo
     assert "@测试文件 这份文件有哪些重点？" in rendered
     assert "工作区和别名只是定位信息" in rendered
     assert "retrieval evidence 和 citation" in rendered
+
+
+def test_post_bind_verification_failed_blocks_success_even_with_optimistic_alias_bound():
+    diagnostics = _bound_success_diagnostics(alias="数据中台体系建设方案")
+    diagnostics["post_import_alias_verification_status"] = "failed"
+    diagnostics["post_import_alias_verification_failure_reason"] = "alias_resolver_mismatch"
+
+    rendered = render_natural_file_import_response(diagnostics)
+    context = diagnostics["natural_import_context"]
+
+    assert context["post_import_alias_verification_status"] == "failed"
+    assert context["can_claim_file_remembered"] is False
+    assert context["can_claim_alias_bound"] is False
+    assert "文件我已经记下了" not in rendered
+    assert "别名：@数据中台体系建设方案" not in rendered
+    assert "后续你可以直接问" not in rendered
+    assert "别名还没有完成" in rendered
+
+
+def test_post_bind_verification_missing_blocks_success_by_default():
+    diagnostics = _bound_success_diagnostics(alias="数据中台体系建设方案")
+    diagnostics.pop("post_import_alias_verification_status")
+    diagnostics.pop("post_import_alias_verification_alias")
+    diagnostics.pop("post_import_alias_verification_owner_source")
+    diagnostics.pop("post_import_alias_verification_failure_reason")
+
+    rendered = render_natural_file_import_response(diagnostics)
+    context = diagnostics["natural_import_context"]
+
+    assert context["post_import_alias_verification_status"] == "not_run"
+    assert context["can_claim_file_remembered"] is False
+    assert context["can_claim_alias_bound"] is False
+    assert "文件我已经记下了" not in rendered
+    assert "别名：@数据中台体系建设方案" not in rendered
 
 
 def test_bound_success_response_uses_generated_safe_alias_without_exposing_raw_path():
@@ -523,6 +675,76 @@ def test_run_agent_persists_natural_import_alias_as_bound_and_continuity(tmp_pat
     assert decision.trace["alias_continuity_owner_source"] == "gateway_session_key"
     assert decision.filters["document_id"] == "doc-runtime"
     assert decision.filters["version_id"] == "ver-runtime"
+
+
+def test_run_agent_post_import_alias_verification_must_pass_for_success_claim(tmp_path):
+    agent = object.__new__(AIAgent)
+    agent.session_id = "api-natural-import-session"
+    agent._gateway_session_key = "gateway-chat-1"
+    agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    agent._memory_kernel.document_scope._storage_path = tmp_path / "scope.json"
+    diagnostics = {
+        "ingestion_status": "upload_succeeded",
+        "document_id": "doc-runtime",
+        "version_id": "ver-runtime",
+        "import_source_path": "/tmp/测试文件.docx",
+        "alias_resolution": {
+            "status": "alias_seeded",
+            "alias": "测试文件",
+            "resolved_document_id": "doc-runtime",
+            "resolved_version_id": "ver-runtime",
+        },
+    }
+
+    agent._persist_natural_import_alias(diagnostics)
+    context = build_natural_import_context(diagnostics)
+
+    assert diagnostics["alias_persisted"] is True
+    assert diagnostics["post_import_alias_verification_status"] == "passed"
+    assert context["can_claim_file_remembered"] is True
+    assert context["can_claim_alias_bound"] is True
+
+
+def test_run_agent_failed_post_import_alias_verification_blocks_success_claim(tmp_path):
+    agent = object.__new__(AIAgent)
+    agent.session_id = "api-natural-import-session"
+    agent._gateway_session_key = "gateway-chat-1"
+    agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    agent._memory_kernel.document_scope._storage_path = tmp_path / "scope.json"
+    diagnostics = {
+        "ingestion_status": "upload_succeeded",
+        "document_id": "doc-runtime",
+        "version_id": "ver-runtime",
+        "import_source_path": "/tmp/测试文件.docx",
+        "alias_resolution": {
+            "status": "alias_seeded",
+            "alias": "测试文件",
+            "resolved_document_id": "doc-runtime",
+            "resolved_version_id": "ver-runtime",
+        },
+    }
+
+    def _alias_missing_scope(**_: object) -> DocumentScopeDecision:
+        return DocumentScopeDecision(
+            filters={},
+            trace={
+                "scope_resolution_status": "alias_missing",
+                "alias_resolution": {"status": "alias_missing", "alias": "测试文件"},
+                "alias_missing": True,
+            },
+            suppress_retrieval=True,
+        )
+
+    agent._memory_kernel.resolve_document_scope = _alias_missing_scope  # type: ignore[method-assign]
+
+    agent._persist_natural_import_alias(diagnostics)
+    context = build_natural_import_context(diagnostics)
+
+    assert diagnostics["alias_persisted"] is True
+    assert diagnostics["post_import_alias_verification_status"] == "failed"
+    assert diagnostics["post_import_alias_verification_failure_reason"] == "alias_not_resolved"
+    assert context["can_claim_file_remembered"] is False
+    assert context["can_claim_alias_bound"] is False
 
 
 def test_run_agent_restores_import_alias_continuity_in_new_agent_instance(tmp_path):

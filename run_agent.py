@@ -86,6 +86,7 @@ from agent.memory_kernel.merge_policy import merge_request_contexts
 from agent.memory_kernel.hermes_memory_upload_client import HermesMemoryUploadClient
 from agent.memory_kernel.natural_file_import_runtime import (
     build_natural_import_llm_messages,
+    maybe_handle_temporary_attachment_boundary,
     maybe_handle_natural_file_import,
     render_natural_file_import_response,
 )
@@ -2952,13 +2953,28 @@ class AIAgent:
         if not isinstance(alias_resolution, dict):
             diagnostics["alias_persisted"] = False
             diagnostics["alias_persist_failed_reason"] = "missing_alias_resolution"
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                failure_reason="missing_alias_resolution",
+            )
             return
         if alias_resolution.get("status") != "alias_seeded":
             diagnostics["alias_persisted"] = False
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="not_run",
+                failure_reason="alias_not_seeded",
+            )
             return
         if not self._memory_kernel:
             diagnostics["alias_persisted"] = False
             diagnostics["alias_persist_failed_reason"] = "memory_kernel_unavailable"
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                failure_reason="memory_kernel_unavailable",
+            )
             return
         alias = alias_resolution.get("alias")
         document_id = alias_resolution.get("resolved_document_id") or diagnostics.get("document_id")
@@ -2966,6 +2982,12 @@ class AIAgent:
         if not alias or not document_id:
             diagnostics["alias_persisted"] = False
             diagnostics["alias_persist_failed_reason"] = "missing_alias_or_document_id"
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                alias=alias,
+                failure_reason="missing_alias_or_document_id",
+            )
             return
         source_path = diagnostics.get("import_source_path")
         title = (
@@ -3032,6 +3054,155 @@ class AIAgent:
         )
         diagnostics["api_session_key_source"] = (
             diagnostics.get("api_session_key_source") or api_session_key_source
+        )
+        self._verify_natural_import_alias_binding(diagnostics)
+
+    def _set_post_import_alias_verification(
+        self,
+        diagnostics: Dict[str, Any],
+        *,
+        status: str,
+        alias: str | None = None,
+        owner_source: str | None = None,
+        failure_reason: str | None = None,
+    ) -> None:
+        diagnostics["post_import_alias_verification_status"] = status
+        diagnostics["post_import_alias_verification_alias"] = (
+            f"@{str(alias).lstrip('@')}" if alias else None
+        )
+        diagnostics["post_import_alias_verification_owner_source"] = owner_source
+        diagnostics["post_import_alias_verification_failure_reason"] = failure_reason
+
+    def _verify_natural_import_alias_binding(self, diagnostics: Dict[str, Any]) -> None:
+        alias_resolution = diagnostics.get("alias_resolution")
+        if not isinstance(alias_resolution, dict):
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                failure_reason="missing_alias_resolution",
+            )
+            return
+
+        alias = str(alias_resolution.get("alias") or "").lstrip("@")
+        expected_document_id = str(
+            alias_resolution.get("resolved_document_id") or diagnostics.get("document_id") or ""
+        )
+        expected_version_id = str(
+            alias_resolution.get("resolved_version_id") or diagnostics.get("version_id") or ""
+        )
+        owner_source = (
+            diagnostics.get("alias_continuity_owner_source")
+            or diagnostics.get("api_session_key_source")
+        )
+        if not alias or not expected_document_id:
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                alias=alias,
+                owner_source=str(owner_source or ""),
+                failure_reason="missing_alias_or_document_id",
+            )
+            return
+        if not diagnostics.get("alias_persisted"):
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                alias=alias,
+                owner_source=str(owner_source or ""),
+                failure_reason="alias_not_persisted",
+            )
+            return
+        if diagnostics.get("alias_continuity_persistent") is False and str(
+            owner_source or ""
+        ) == "process_local_fallback":
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                alias=alias,
+                owner_source="process_local_fallback",
+                failure_reason="non_persistent_alias_owner",
+            )
+            return
+        if not self._memory_kernel:
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                alias=alias,
+                owner_source=str(owner_source or ""),
+                failure_reason="memory_kernel_unavailable",
+            )
+            return
+
+        try:
+            decision = self._memory_kernel.resolve_document_scope(
+                session_id=self.session_id or "",
+                query=f"围绕 @{alias} 回答，必须给出 citation",
+                filters={},
+            )
+        except Exception as exc:
+            logger.warning("Natural import post-bind alias verification failed: %s", exc)
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="failed",
+                alias=alias,
+                owner_source=str(owner_source or ""),
+                failure_reason=type(exc).__name__,
+            )
+            return
+
+        trace = decision.trace or {}
+        alias_trace = trace.get("alias_resolution")
+        if not isinstance(alias_trace, dict):
+            alias_trace = {}
+        resolved_document_id = str(
+            decision.filters.get("document_id")
+            or alias_trace.get("resolved_document_id")
+            or trace.get("active_document_id")
+            or ""
+        )
+        resolved_version_id = str(
+            decision.filters.get("version_id")
+            or alias_trace.get("resolved_version_id")
+            or trace.get("active_document_version_id")
+            or ""
+        )
+        scope_status = str(
+            trace.get("scope_resolution_status")
+            or alias_trace.get("status")
+            or ""
+        )
+        verify_owner_source = str(
+            trace.get("alias_continuity_owner_source")
+            or owner_source
+            or ""
+        )
+        alias_resolved = scope_status == "alias_resolved" or alias_trace.get("status") == "alias_resolved"
+        document_matches = resolved_document_id == expected_document_id
+        version_matches = not expected_version_id or resolved_version_id == expected_version_id
+        if alias_resolved and not decision.suppress_retrieval and document_matches and version_matches:
+            self._set_post_import_alias_verification(
+                diagnostics,
+                status="passed",
+                alias=alias,
+                owner_source=verify_owner_source,
+                failure_reason=None,
+            )
+            return
+
+        if not alias_resolved or trace.get("alias_missing") is True or decision.suppress_retrieval:
+            reason = "alias_not_resolved"
+        elif not document_matches:
+            reason = "document_mismatch"
+        elif not version_matches:
+            reason = "version_mismatch"
+        else:
+            reason = "inconclusive"
+        self._set_post_import_alias_verification(
+            diagnostics,
+            status="failed",
+            alias=alias,
+            owner_source=verify_owner_source,
+            failure_reason=reason,
         )
 
     def _api_session_key_source(self) -> str:
@@ -3148,6 +3319,42 @@ class AIAgent:
     def _natural_import_alias_from_response(self, content: str) -> str | None:
         match = re.search(r"别名我设定为：@([A-Za-z0-9_\-\u4e00-\u9fff]+)", content or "")
         return match.group(1) if match else None
+
+    def _has_imported_file_scope_for_query(self, query: str) -> bool:
+        """Best-effort check that a file-like question already has Hermes scope.
+
+        The temporary attachment boundary should only answer when Hermes has no
+        active/imported document scope to rely on. This avoids treating a real
+        active document or restored alias as a mere OpenWebUI attachment.
+        """
+
+        if not self._memory_kernel:
+            return False
+        try:
+            decision = self._memory_kernel.resolve_document_scope(
+                session_id=self.session_id or "",
+                query=query or "",
+                filters={},
+            )
+        except Exception:
+            return False
+        trace = decision.trace or {}
+        if decision.suppress_retrieval:
+            return False
+        return bool(
+            decision.filters.get("document_id")
+            or decision.allowed_document_ids
+            or (
+                trace.get("active_document_id")
+                and trace.get("scope_resolution_status")
+                in {
+                    "active_document_applied",
+                    "active_document_reused",
+                    "alias_resolved",
+                    "resolved_from_query_title",
+                }
+            )
+        )
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
@@ -8986,6 +9193,29 @@ class AIAgent:
             }
 
         self._hydrate_natural_import_aliases_from_history(conversation_history)
+
+        _attachment_boundary_response = maybe_handle_temporary_attachment_boundary(original_user_message)
+        if _attachment_boundary_response is not None and not self._has_imported_file_scope_for_query(original_user_message):
+            user_msg = {"role": "user", "content": user_message}
+            assistant_msg = {"role": "assistant", "content": _attachment_boundary_response.final_response}
+            messages.extend([user_msg, assistant_msg])
+            self._persist_session(messages, conversation_history)
+            return {
+                "final_response": _attachment_boundary_response.final_response,
+                "last_reasoning": None,
+                "messages": messages,
+                "api_calls": 0,
+                "completed": True,
+                "partial": False,
+                "interrupted": False,
+                "response_previewed": False,
+                "model": self.model,
+                "provider": self.provider,
+                "base_url": self.base_url,
+                "memory_kernel": {
+                    "temporary_attachment_boundary": _attachment_boundary_response.diagnostics,
+                },
+            }
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on

@@ -1,5 +1,14 @@
 # TODO
 
+## Phase 2.118d
+
+- Implemented post-import alias verification gate for natural import success claims.
+- `can_claim_file_remembered` / `can_claim_alias_bound` now require upload success, document/version scope, alias persistence, and `post_import_alias_verification_status=passed`.
+- `run_agent.py` now verifies the exact displayed alias through `MemoryKernel.resolve_document_scope(...)` after session alias persistence before allowing remembered / alias-ready wording.
+- Failed, missing, owner-mismatched, or inconclusive post-bind verification downgrades the response to safe incomplete status.
+- Verification: TDD red reproduced 4 failures; py_compile passed; natural import runtime / flow / session scope regression `128 passed`; legacy natural import parser tests `28 passed`; `git diff --check` passed.
+- Next: Codex B review before any runtime candidate or OpenWebUI / test-machine validation. Do not enter Phase 2.119 yet.
+
 ## Phase 2.118c
 
 - Implemented Codex B review fix for natural import alias overclaim safety: the final validator now rejects broader natural-language alias binding / follow-up availability overclaims when `can_claim_alias_bound=false`.
