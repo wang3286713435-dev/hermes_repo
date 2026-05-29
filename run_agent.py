@@ -144,8 +144,12 @@ _ENTERPRISE_MEMORY_TOOL_GUIDANCE = (
     "history memory, or confirmed facts as authoritative company-file content evidence.\n"
     "- enterprise_memory_search is the answer-evidence path. If it returns Missing Evidence, say "
     "Missing Evidence / needs manual review instead of guessing.\n"
+    "- If enterprise_memory_find_files returns exactly one safe candidate, call enterprise_memory_search "
+    "scoped to that document before answering; if it returns multiple candidates, ask the user to confirm.\n"
     "- enterprise_memory_import_file may claim a file is remembered only when upload, alias persistence, "
     "and post-bind verification all pass.\n"
+    "- For temporary attachment questions, explain that the attachment is not enterprise memory yet and "
+    "ask whether to import it with enterprise_memory_import_file; do not claim it has an alias/workspace.\n"
 )
 
 
@@ -3347,16 +3351,60 @@ class AIAgent:
             )
         return self._enterprise_memory_json(function_name, {"success": False, "error": "unhandled_tool"})
 
+    def _requires_enterprise_memory_tool_source_of_truth(self) -> bool:
+        platform_key = str(getattr(self, "platform", "") or "").strip().lower().replace("-", "_")
+        return platform_key in {"api_server", "openai_compatible", "openai_compat", "openai"}
+
+    @staticmethod
+    def _enterprise_memory_tool_flags(tool: str | None = None) -> dict[str, bool]:
+        return {
+            "enterprise_memory_tool_used": bool(tool),
+            "enterprise_memory_import_file_used": tool == "enterprise_memory_import_file",
+            "enterprise_memory_search_used": tool == "enterprise_memory_search",
+            "enterprise_memory_find_files_used": tool == "enterprise_memory_find_files",
+            "enterprise_memory_resolve_alias_used": tool == "enterprise_memory_resolve_alias",
+        }
+
+    def _record_enterprise_memory_tool_use(self, tool: str) -> None:
+        usage = getattr(self, "_enterprise_memory_turn_tool_usage", None)
+        if not isinstance(usage, dict):
+            usage = self._enterprise_memory_tool_flags(None)
+            self._enterprise_memory_turn_tool_usage = usage
+        for key, value in self._enterprise_memory_tool_flags(tool).items():
+            usage[key] = bool(usage.get(key)) or bool(value)
+
+    def _enterprise_memory_turn_diagnostics(
+        self,
+        *,
+        hidden_pre_model_import_used: bool,
+        hidden_pre_model_retrieval_used: bool,
+        final_response_sanitized: bool,
+    ) -> dict[str, Any]:
+        usage = getattr(self, "_enterprise_memory_turn_tool_usage", None)
+        if not isinstance(usage, dict):
+            usage = self._enterprise_memory_tool_flags(None)
+        payload = {
+            **self._enterprise_memory_tool_flags(None),
+            **{key: bool(value) for key, value in usage.items()},
+            "hidden_pre_model_import_used": bool(hidden_pre_model_import_used),
+            "hidden_pre_model_retrieval_used": bool(hidden_pre_model_retrieval_used),
+            "final_response_sanitized": bool(final_response_sanitized),
+            "diagnostics_sanitized": True,
+        }
+        return self._enterprise_memory_sanitize_payload(payload)
+
     def _enterprise_memory_json(self, tool: str, payload: dict[str, Any]) -> str:
+        self._record_enterprise_memory_tool_use(tool)
         base = {
             "tool": tool,
-            "enterprise_memory_tool_used": True,
+            **self._enterprise_memory_tool_flags(tool),
             "read_file_as_content_evidence": False,
             "search_files_as_company_file_authority": False,
             "execute_code_as_content_evidence": False,
             "facts_as_answer": False,
             "snapshot_as_answer": False,
             "transcript_as_fact": False,
+            "diagnostics_sanitized": True,
         }
         base.update(payload or {})
         base = self._enterprise_memory_sanitize_payload(base)
@@ -9735,6 +9783,11 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+        _enterprise_memory_source_of_truth_required = self._requires_enterprise_memory_tool_source_of_truth()
+        self._enterprise_memory_turn_tool_usage = self._enterprise_memory_tool_flags(None)
+        _hidden_pre_model_import_used = False
+        _hidden_pre_model_retrieval_used = False
+        _final_response_sanitizer_ran = False
 
         _natural_import_upload_enabled = env_var_enabled("HERMES_NATURAL_IMPORT_REAL_UPLOAD_ENABLED", default=False)
         _natural_import_upload_client = (
@@ -9749,12 +9802,15 @@ class AIAgent:
             client=_natural_import_upload_client,
             enabled=_natural_import_upload_enabled,
         )
-        _natural_import_response = maybe_handle_natural_file_import(
-            original_user_message,
-            upload_adapter=_natural_import_adapter,
-            real_upload_enabled=_natural_import_upload_enabled,
-        )
+        _natural_import_response = None
+        if not _enterprise_memory_source_of_truth_required:
+            _natural_import_response = maybe_handle_natural_file_import(
+                original_user_message,
+                upload_adapter=_natural_import_adapter,
+                real_upload_enabled=_natural_import_upload_enabled,
+            )
         if _natural_import_response is not None:
+            _hidden_pre_model_import_used = True
             _natural_import_response.diagnostics["history_message_count"] = len(
                 conversation_history or []
             )
@@ -9766,6 +9822,8 @@ class AIAgent:
                 _natural_import_response.diagnostics,
                 llm_response_generator=self._generate_natural_import_llm_response,
             )
+            final_response = sanitize_user_visible_storage_paths(final_response)
+            _final_response_sanitizer_ran = True
             user_msg = {"role": "user", "content": user_message}
             assistant_msg = {"role": "assistant", "content": final_response}
             messages.extend([user_msg, assistant_msg])
@@ -9790,18 +9848,27 @@ class AIAgent:
                 "memory_kernel": {
                     "natural_file_import": _natural_import_response.diagnostics,
                 },
+                "enterprise_memory": self._enterprise_memory_turn_diagnostics(
+                    hidden_pre_model_import_used=_hidden_pre_model_import_used,
+                    hidden_pre_model_retrieval_used=_hidden_pre_model_retrieval_used,
+                    final_response_sanitized=_final_response_sanitizer_ran,
+                ),
             }
 
         self._hydrate_natural_import_aliases_from_history(conversation_history)
 
-        _attachment_boundary_response = maybe_handle_temporary_attachment_boundary(original_user_message)
+        _attachment_boundary_response = None
+        if not _enterprise_memory_source_of_truth_required:
+            _attachment_boundary_response = maybe_handle_temporary_attachment_boundary(original_user_message)
         if _attachment_boundary_response is not None and not self._has_imported_file_scope_for_query(original_user_message):
+            _attachment_final_response = sanitize_user_visible_storage_paths(_attachment_boundary_response.final_response)
+            _final_response_sanitizer_ran = True
             user_msg = {"role": "user", "content": user_message}
-            assistant_msg = {"role": "assistant", "content": _attachment_boundary_response.final_response}
+            assistant_msg = {"role": "assistant", "content": _attachment_final_response}
             messages.extend([user_msg, assistant_msg])
             self._persist_session(messages, conversation_history)
             return {
-                "final_response": _attachment_boundary_response.final_response,
+                "final_response": _attachment_final_response,
                 "last_reasoning": None,
                 "messages": messages,
                 "api_calls": 0,
@@ -9815,6 +9882,11 @@ class AIAgent:
                 "memory_kernel": {
                     "temporary_attachment_boundary": _attachment_boundary_response.diagnostics,
                 },
+                "enterprise_memory": self._enterprise_memory_turn_diagnostics(
+                    hidden_pre_model_import_used=_hidden_pre_model_import_used,
+                    hidden_pre_model_retrieval_used=_hidden_pre_model_retrieval_used,
+                    final_response_sanitized=_final_response_sanitizer_ran,
+                ),
             }
 
         # Track memory nudge trigger (turn-based, checked here).
@@ -10001,24 +10073,36 @@ class AIAgent:
                         "active_document_title": None,
                         "error": str(exc),
                     }
-                _memory_kernel_request = KernelRequest(
-                    query=original_user_message,
-                    session_id=self.session_id or "",
-                    user_id=getattr(self, "_user_id", None),
-                    top_k=getattr(self._memory_kernel_config, "top_k", 8) or 8,
-                    filters=_memory_kernel_filters,
-                    retrieval_mode=_memory_kernel_options.get("retrieval_mode", "hybrid"),
-                    enable_dense=bool(_memory_kernel_options.get("enable_dense", True)),
-                    enable_sparse=bool(_memory_kernel_options.get("enable_sparse", True)),
-                    enable_hybrid=bool(_memory_kernel_options.get("enable_hybrid", True)),
-                    debug=bool(_memory_kernel_options.get("debug", False)),
-                    query_vector=_memory_kernel_options.get("query_vector"),
-                    document_scope=_document_scope_trace,
-                    allowed_document_ids=_allowed_document_ids,
-                    cross_document_allowed=_cross_document_allowed,
-                )
-                _memory_kernel_result = self._memory_kernel.start_turn(_memory_kernel_request)
-                _memory_kernel_context = _memory_kernel_result.context_block or ""
+                if _enterprise_memory_source_of_truth_required:
+                    _memory_kernel_request = None
+                    _memory_kernel_result = None
+                    _memory_kernel_context = ""
+                else:
+                    _memory_kernel_request = KernelRequest(
+                        query=original_user_message,
+                        session_id=self.session_id or "",
+                        user_id=getattr(self, "_user_id", None),
+                        top_k=getattr(self._memory_kernel_config, "top_k", 8) or 8,
+                        filters=_memory_kernel_filters,
+                        retrieval_mode=_memory_kernel_options.get("retrieval_mode", "hybrid"),
+                        enable_dense=bool(_memory_kernel_options.get("enable_dense", True)),
+                        enable_sparse=bool(_memory_kernel_options.get("enable_sparse", True)),
+                        enable_hybrid=bool(_memory_kernel_options.get("enable_hybrid", True)),
+                        debug=bool(_memory_kernel_options.get("debug", False)),
+                        query_vector=_memory_kernel_options.get("query_vector"),
+                        document_scope=_document_scope_trace,
+                        allowed_document_ids=_allowed_document_ids,
+                        cross_document_allowed=_cross_document_allowed,
+                    )
+                    _memory_kernel_result = self._memory_kernel.start_turn(_memory_kernel_request)
+                    _memory_kernel_context = _memory_kernel_result.context_block or ""
+                    try:
+                        retrieval_output = getattr(_memory_kernel_result, "retrieval", None)
+                        retrieval_items = getattr(retrieval_output, "items", None) or []
+                        retrieval_citations = getattr(retrieval_output, "citations", None) or []
+                        _hidden_pre_model_retrieval_used = bool(_memory_kernel_context or retrieval_items or retrieval_citations)
+                    except Exception:
+                        _hidden_pre_model_retrieval_used = bool(_memory_kernel_context)
             except Exception as exc:
                 logger.warning("Enterprise memory kernel start_turn failed: %s", exc)
                 _memory_kernel_request = None
@@ -12858,6 +12942,7 @@ class AIAgent:
         if final_response and not interrupted:
             try:
                 _sanitized_response = sanitize_user_visible_storage_paths(final_response)
+                _final_response_sanitizer_ran = True
                 if _sanitized_response != final_response:
                     final_response = _sanitized_response
                     for _msg in reversed(messages):
@@ -12978,7 +13063,17 @@ class AIAgent:
                 if self._memory_kernel and _memory_kernel_result
                 else None
             ),
+            "enterprise_memory": self._enterprise_memory_turn_diagnostics(
+                hidden_pre_model_import_used=_hidden_pre_model_import_used,
+                hidden_pre_model_retrieval_used=_hidden_pre_model_retrieval_used,
+                final_response_sanitized=_final_response_sanitizer_ran,
+            ),
         }
+        if result.get("memory_kernel") is not None:
+            try:
+                result["memory_kernel"] = self._enterprise_memory_sanitize_payload(result["memory_kernel"])
+            except Exception:
+                pass
         # If a /steer landed after the final assistant turn (no more tool
         # batches to drain into), hand it back to the caller so it can be
         # delivered as the next user turn instead of being silently lost.

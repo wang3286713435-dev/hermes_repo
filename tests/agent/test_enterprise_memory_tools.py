@@ -160,6 +160,10 @@ def test_enterprise_memory_find_files_returns_safe_candidates_without_raw_path()
     result = _loads(agent._handle_enterprise_memory_tool("enterprise_memory_find_files", {"query": "C塔智能化标准"}))
 
     assert result["success"] is True
+    assert result["enterprise_memory_tool_used"] is True
+    assert result["enterprise_memory_find_files_used"] is True
+    assert result["enterprise_memory_search_used"] is False
+    assert result["enterprise_memory_import_file_used"] is False
     assert result["raw_paths_exposed"] is False
     assert result["candidates"][0]["document_id"] == "doc-standard"
     assert "source_path" not in result["candidates"][0]
@@ -218,6 +222,10 @@ def test_enterprise_memory_search_returns_evidence_and_citations():
     )
 
     assert result["success"] is True
+    assert result["enterprise_memory_tool_used"] is True
+    assert result["enterprise_memory_search_used"] is True
+    assert result["enterprise_memory_find_files_used"] is False
+    assert result["enterprise_memory_import_file_used"] is False
     assert result["missing_evidence"] is False
     assert result["retrieval_evidence_document_ids"] == ["doc-a"]
     assert result["evidence"][0]["chunk_id"] == "chunk-a"
@@ -325,6 +333,10 @@ def test_enterprise_memory_import_file_requires_post_bind_verification(monkeypat
     )
 
     assert result["success"] is False
+    assert result["enterprise_memory_tool_used"] is True
+    assert result["enterprise_memory_import_file_used"] is True
+    assert result["enterprise_memory_search_used"] is False
+    assert result["enterprise_memory_find_files_used"] is False
     assert result["can_claim_file_remembered"] is False
     assert result["can_claim_alias_bound"] is False
     assert result["post_import_alias_verification_status"] in {"not_run", "failed", None}
@@ -369,6 +381,10 @@ def test_enterprise_memory_import_file_success_reports_safe_alias(monkeypatch):
     )
 
     assert result["success"] is True
+    assert result["enterprise_memory_tool_used"] is True
+    assert result["enterprise_memory_import_file_used"] is True
+    assert result["enterprise_memory_search_used"] is False
+    assert result["enterprise_memory_find_files_used"] is False
     assert result["can_claim_file_remembered"] is True
     assert result["can_claim_alias_bound"] is True
     assert result["safe_alias"] == "@演示文件"
@@ -429,3 +445,5 @@ def test_enterprise_memory_prompt_guidance_blocks_ordinary_file_authority():
     assert "enterprise_memory_search" in _ENTERPRISE_MEMORY_TOOL_GUIDANCE
     assert "post-bind verification" in _ENTERPRISE_MEMORY_TOOL_GUIDANCE
     assert "Missing Evidence" in _ENTERPRISE_MEMORY_TOOL_GUIDANCE
+    assert "temporary attachment" in _ENTERPRISE_MEMORY_TOOL_GUIDANCE
+    assert "ask whether to import" in _ENTERPRISE_MEMORY_TOOL_GUIDANCE

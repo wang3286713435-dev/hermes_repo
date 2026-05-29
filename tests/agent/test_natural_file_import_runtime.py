@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from agent.memory_kernel.natural_file_import import NaturalFileImportRequest
 from agent.memory_kernel.natural_file_import_runtime import (
@@ -93,6 +94,34 @@ class FakeBodyRetrieval:
         )
 
 
+def _fake_chat_response(text: str = "model-visible route"):
+    return SimpleNamespace(
+        model="fake-model",
+        usage=None,
+        choices=[
+            SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content=text, tool_calls=None),
+            )
+        ],
+    )
+
+
+def _make_api_server_agent() -> AIAgent:
+    return AIAgent(
+        model="test/model",
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        provider="custom",
+        platform="api_server",
+        quiet_mode=True,
+        skip_memory=True,
+        skip_context_files=True,
+        max_iterations=1,
+        enabled_toolsets=[],
+    )
+
+
 def _success_result() -> NaturalFileUploadResult:
     return NaturalFileUploadResult(
         success=True,
@@ -181,6 +210,54 @@ def test_temporary_attachment_boundary_does_not_intercept_explicit_import():
     response = maybe_handle_temporary_attachment_boundary("帮我导入这个文件：/tmp/demo.pdf")
 
     assert response is None
+
+
+def test_api_server_natural_import_does_not_hidden_early_return(monkeypatch):
+    calls = {"natural_import": 0, "api": 0}
+
+    def fake_hidden_import(*args, **kwargs):
+        calls["natural_import"] += 1
+        return NaturalFileImportRuntimeResponse(
+            final_response="hidden import response",
+            completed=True,
+            diagnostics=_bound_success_diagnostics(),
+        )
+
+    def fake_api_call(api_kwargs):
+        calls["api"] += 1
+        return _fake_chat_response("model-visible route")
+
+    agent = _make_api_server_agent()
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda name, **kwargs: [])
+    monkeypatch.setattr("run_agent.maybe_handle_natural_file_import", fake_hidden_import)
+    monkeypatch.setattr(agent, "_interruptible_api_call", fake_api_call)
+    monkeypatch.setattr(agent, "_interruptible_streaming_api_call", lambda api_kwargs, **kwargs: fake_api_call(api_kwargs))
+
+    result = agent.run_conversation("请导入 /Users/private/demo.docx 并设为 @演示文件")
+
+    assert calls["natural_import"] == 0
+    assert calls["api"] == 1
+    assert result["final_response"] == "model-visible route"
+    assert result["enterprise_memory"]["hidden_pre_model_import_used"] is False
+
+
+def test_api_server_temporary_attachment_boundary_does_not_hidden_early_return(monkeypatch):
+    calls = {"api": 0}
+
+    def fake_api_call(api_kwargs):
+        calls["api"] += 1
+        return _fake_chat_response("请确认是否要导入这个临时附件。")
+
+    agent = _make_api_server_agent()
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda name, **kwargs: [])
+    monkeypatch.setattr(agent, "_interruptible_api_call", fake_api_call)
+    monkeypatch.setattr(agent, "_interruptible_streaming_api_call", lambda api_kwargs, **kwargs: fake_api_call(api_kwargs))
+
+    result = agent.run_conversation("这个附件现在有别名或工作区吗？")
+
+    assert calls["api"] == 1
+    assert "导入" in result["final_response"]
+    assert result["enterprise_memory"]["hidden_pre_model_import_used"] is False
 
 
 def test_temporary_attachment_boundary_can_be_skipped_when_imported_scope_exists(tmp_path):

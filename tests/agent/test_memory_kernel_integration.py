@@ -147,7 +147,7 @@ def test_run_conversation_injects_contexts_in_policy_order(monkeypatch):
         "backend": "database_fallback",
         "dense_retrieval_status": "not_executed",
         "citations": [{"chunk_id": "chunk-1"}],
-        "trace": {},
+        "trace": {"raw_path": "/Users/private/source.docx", "source_uri": "file:///Users/private/source.docx"},
     }
     agent = _make_agent()
     agent._memory_kernel = FakeMemoryKernel(context_block=kernel_context, payload=kernel_payload)
@@ -178,7 +178,51 @@ def test_run_conversation_injects_contexts_in_policy_order(monkeypatch):
     assert "must not override enterprise memory context" in user_message
     assert result["memory_kernel"]["backend"] == "database_fallback"
     assert result["memory_kernel"]["citations"][0]["chunk_id"] == "chunk-1"
+    assert "/Users/private" not in str(result["memory_kernel"])
+    assert "file:///Users" not in str(result["memory_kernel"])
+    assert result["enterprise_memory"]["diagnostics_sanitized"] is True
+    assert result["enterprise_memory"]["final_response_sanitized"] is True
     assert result["final_response"] == "answer"
+
+
+def test_api_server_requires_enterprise_memory_tools_instead_of_hidden_context(monkeypatch):
+    captured = {}
+    kernel_context = (
+        "<enterprise-memory-context>\n"
+        "hidden enterprise evidence\n"
+        "</enterprise-memory-context>"
+    )
+    kernel_payload = {
+        "route": {"route_type": "enterprise_retrieval", "needs_retrieval": True, "reason": "fake", "mode": "bm25_first"},
+        "backend": "database_fallback",
+        "dense_retrieval_status": "not_executed",
+        "citations": [{"chunk_id": "chunk-1"}],
+        "trace": {},
+    }
+    agent = _make_agent()
+    agent.platform = "api_server"
+    agent._memory_kernel = FakeMemoryKernel(context_block=kernel_context, payload=kernel_payload)
+    agent._memory_kernel_config = SimpleNamespace(enabled=True, top_k=8)
+    agent._memory_manager = None
+
+    def fake_invoke_hook(name, **kwargs):
+        return []
+
+    def fake_call(api_kwargs):
+        captured["messages"] = api_kwargs["messages"]
+        return _fake_chat_response("answer")
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+    monkeypatch.setattr(agent, "_interruptible_api_call", fake_call)
+    monkeypatch.setattr(agent, "_interruptible_streaming_api_call", lambda api_kwargs, **kwargs: fake_call(api_kwargs))
+
+    result = agent.run_conversation("围绕 @主标书 回答工程地点")
+
+    user_message = captured["messages"][-1]["content"]
+    assert "<enterprise-memory-context>" not in user_message
+    assert result["memory_kernel"] is None
+    assert result["enterprise_memory"]["hidden_pre_model_retrieval_used"] is False
+    assert result["enterprise_memory"]["enterprise_memory_search_used"] is False
 
 
 def test_run_conversation_unavailable_kernel_does_not_break_chat(monkeypatch):
