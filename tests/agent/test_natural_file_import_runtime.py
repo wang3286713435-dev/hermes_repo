@@ -169,7 +169,10 @@ def test_temporary_attachment_alias_workspace_question_returns_product_boundary(
     assert "临时附件上下文" in response.final_response
     assert "不能确认它已经进入 Hermes 记忆库" in response.final_response
     assert "不能说它已经绑定别名或工作区" in response.final_response
+    assert "是否要我现在把它导入 Hermes 记忆库" in response.final_response
     assert "帮我导入这个文件" in response.final_response
+    assert "文件我已经记下了" not in response.final_response
+    assert "已入库" not in response.final_response
     assert "系统预设回复" not in response.final_response
     assert "Natural file import diagnostics:" not in response.final_response
 
@@ -746,6 +749,31 @@ def test_user_visible_storage_path_sanitizer_preserves_filename_and_citations():
     assert "/Volumes/company/share" not in sanitized
     assert "file://" not in sanitized
     assert "smb://" not in sanitized
+
+
+def test_user_visible_sanitizer_redacts_self_awareness_internal_leakage():
+    response = (
+        "我可以访问 /Users/vc/repo/Hermes_memory/docs/PRD.md，也能读取 "
+        "file:///Volumes/company/share/方案.docx。\n"
+        "api_key=sk-test-secret token: abc123 password=letmein\n"
+        "Traceback (most recent call last): boom\n"
+        "SQL: SELECT * FROM document_versions;\n"
+        "raw row: {'document_id': 'doc-a'}"
+    )
+
+    sanitized = sanitize_user_visible_storage_paths(response)
+
+    assert "/Users/vc/repo" not in sanitized
+    assert "file://" not in sanitized
+    assert "/Volumes/company/share" not in sanitized
+    assert "sk-test-secret" not in sanitized
+    assert "abc123" not in sanitized
+    assert "letmein" not in sanitized
+    assert "Traceback (most recent call last)" not in sanitized
+    assert "SELECT * FROM" not in sanitized
+    assert "raw row:" not in sanitized
+    assert "[internal value hidden]" in sanitized
+    assert "[internal diagnostic hidden]" in sanitized
 
 
 def test_pdf_parser_failure_is_safe_failure_without_success_or_raw_path():

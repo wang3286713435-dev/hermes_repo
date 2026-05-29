@@ -3577,16 +3577,19 @@ class AIAgent:
         self._persist_natural_import_alias(diagnostics)
         final_response = render_natural_file_import_response(diagnostics)
         final_response = sanitize_user_visible_storage_paths(final_response)
+        natural_import_context = diagnostics.get("natural_import_context")
+        if not isinstance(natural_import_context, dict):
+            natural_import_context = {}
         alias_resolution = diagnostics.get("alias_resolution")
         if not isinstance(alias_resolution, dict):
             alias_resolution = {}
         post_bind_status = diagnostics.get("post_import_alias_verification_status")
-        success = bool(
-            diagnostics.get("ingestion_status") == "upload_succeeded"
-            and post_bind_status == "passed"
-            and alias_resolution.get("resolved_document_id")
-            and alias_resolution.get("resolved_version_id")
-        )
+        success = bool(natural_import_context.get("can_claim_file_remembered") is True)
+        safe_alias = None
+        if success and natural_import_context.get("can_claim_alias_bound") is True:
+            alias_text = str(natural_import_context.get("suggested_alias") or "").strip()
+            if alias_text.startswith("@"):
+                safe_alias = alias_text
         return self._enterprise_memory_json(
             "enterprise_memory_import_file",
             {
@@ -3604,6 +3607,7 @@ class AIAgent:
                 "indexed_count": diagnostics.get("indexed_count"),
                 "can_claim_file_remembered": success,
                 "can_claim_alias_bound": success,
+                "safe_alias": safe_alias,
                 "final_response": final_response,
                 "raw_path_exposed": False,
                 "import_diagnostics_as_retrieval_evidence": False,

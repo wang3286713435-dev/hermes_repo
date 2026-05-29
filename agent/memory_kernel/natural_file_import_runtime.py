@@ -30,6 +30,14 @@ _RAW_STORAGE_PATH_VALUE_RE = re.compile(
     r"(?:(?:file|nas|smb)://[^\s，。；;、\]\)）]+|(?:/Users|/Volumes|/private|/var/folders)(?:/[^\s，。；;、\]\)）]+)+)",
     re.IGNORECASE,
 )
+_SAFE_ALIAS_VALUE_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]{1,80}$")
+_SECRET_VALUE_RE = re.compile(
+    r"\b(api[_-]?key|token|password|secret)\b\s*[:=]\s*[^\s，。；;]+",
+    re.IGNORECASE,
+)
+_TRACEBACK_LINE_RE = re.compile(r"^.*Traceback \(most recent call last\):.*$", re.IGNORECASE | re.MULTILINE)
+_SQL_LINE_RE = re.compile(r"^.*\b(?:SQL\s*:|SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+|DELETE\s+FROM)\b.*$", re.IGNORECASE | re.MULTILINE)
+_RAW_ROW_LINE_RE = re.compile(r"^.*\braw\s+row\s*:.*$", re.IGNORECASE | re.MULTILINE)
 _SUCCESS_CLAIM_RE = re.compile(
     r"(文件我已经记下了|导入成功|已经导入|已导入|别名：@|后续你可以直接问|已完成别名绑定|别名已绑定)"
 )
@@ -137,6 +145,8 @@ def maybe_handle_temporary_attachment_boundary(text: str) -> NaturalFileImportRu
                 "",
                 "我还不能确认它已经进入 Hermes 记忆库，也不能说它已经绑定别名或工作区。",
                 "",
+                "是否要我现在把它导入 Hermes 记忆库，并设置一个安全别名？",
+                "",
                 "如果你希望后续能按别名或工作区检索，请明确说：",
                 "帮我导入这个文件，并设为 @你的别名。",
                 "",
@@ -177,7 +187,8 @@ def build_natural_import_context(diagnostics: dict[str, Any]) -> dict[str, Any]:
     alias_resolution = diagnostics.get("alias_resolution")
     if not isinstance(alias_resolution, dict):
         alias_resolution = {}
-    alias = alias_resolution.get("alias")
+    raw_alias = str(alias_resolution.get("alias") or "").strip().lstrip("@")
+    alias = raw_alias if _is_safe_alias(raw_alias) else None
     alias_status = str(alias_resolution.get("status") or diagnostics.get("alias_status") or "unknown")
     post_verify_status = str(diagnostics.get("post_import_alias_verification_status") or "not_run")
     post_verify_alias = diagnostics.get("post_import_alias_verification_alias")
@@ -189,6 +200,7 @@ def build_natural_import_context(diagnostics: dict[str, Any]) -> dict[str, Any]:
     has_document_scope = bool(document_id and version_id)
     alias_bound = (
         alias_status == "alias_bound"
+        and bool(alias)
         and bool(diagnostics.get("alias_persisted") is True or diagnostics.get("alias_status") == "alias_bound")
         and bool(alias_resolution.get("resolved_document_id") or document_id)
         and bool(alias_resolution.get("resolved_version_id") or version_id)
@@ -214,7 +226,10 @@ def build_natural_import_context(diagnostics: dict[str, Any]) -> dict[str, Any]:
         status_reason = str(diagnostics.get("ingestion_status") or "not_executed")
 
     workspace_context = dict(diagnostics.get("workspace_context") or {})
-    alias_text = f"@{alias}" if alias else _display_value(diagnostics.get("suggested_alias"), fallback="@待确认别名")
+    suggested_alias = str(diagnostics.get("suggested_alias") or "").strip().lstrip("@")
+    alias_text = f"@{alias}" if alias else (
+        f"@{suggested_alias}" if _is_safe_alias(suggested_alias) else "@待确认别名"
+    )
     safe_next_actions = []
     if can_claim_success:
         safe_next_actions = [
@@ -330,7 +345,7 @@ def validate_natural_import_response(context: dict[str, Any], candidate_response
 
 
 def sanitize_user_visible_storage_paths(text: str) -> str:
-    """Replace local/NAS storage paths in user-visible text with safe filenames."""
+    """Replace internal paths and sensitive diagnostics in user-visible text."""
 
     def _replacement(match: re.Match[str]) -> str:
         raw = match.group(0)
@@ -339,7 +354,17 @@ def sanitize_user_visible_storage_paths(text: str) -> str:
         parts = [part for part in normalized.split("/") if part]
         return parts[-1] if parts else "文件"
 
-    return _RAW_STORAGE_PATH_VALUE_RE.sub(_replacement, text or "")
+    sanitized = _RAW_STORAGE_PATH_VALUE_RE.sub(_replacement, text or "")
+    sanitized = _SECRET_VALUE_RE.sub(lambda match: f"{match.group(1)}=[internal value hidden]", sanitized)
+    sanitized = _TRACEBACK_LINE_RE.sub("[internal diagnostic hidden]", sanitized)
+    sanitized = _SQL_LINE_RE.sub("[internal diagnostic hidden]", sanitized)
+    sanitized = _RAW_ROW_LINE_RE.sub("[internal diagnostic hidden]", sanitized)
+    return sanitized
+
+
+def _is_safe_alias(alias: Any) -> bool:
+    text = str(alias or "").strip().lstrip("@")
+    return bool(text and _SAFE_ALIAS_VALUE_RE.fullmatch(text))
 
 
 def build_natural_import_llm_messages(context: dict[str, Any]) -> list[dict[str, str]]:

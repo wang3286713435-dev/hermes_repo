@@ -1,5 +1,15 @@
 # TODO
 
+## Phase 2.121d
+
+- Implemented the live UX / boundary No-Go fix without changing Hermes_memory backend contract.
+- Self-awareness / final user-visible output now redacts raw storage paths, URI-like local/NAS paths, secrets/tokens/passwords, traceback lines, SQL snippets, and raw row diagnostics.
+- `enterprise_memory_import_file` now bases success on governed natural import context and returns `safe_alias` only when upload, alias persistence, and post-bind verification allow a safe visible `@alias`.
+- Unsafe, missing, or unverified aliases downgrade to incomplete guidance and cannot claim the file was remembered.
+- Temporary attachment boundary now explicitly says the attachment is temporary, not enterprise memory, and asks whether to import and set a safe alias.
+- Verification passed: py_compile; enterprise memory + session scope `95 passed`; natural import runtime/flow/parser `93 passed`; `git diff --check`.
+- Next: prepare runtime candidate `phase-2.121d-enterprise-memory-live-ux-boundary-runtime-candidate` for Codex C validation.
+
 ## Phase 2.121a
 
 - Implemented the Codex B review fix for enterprise memory tool-result sanitizer.

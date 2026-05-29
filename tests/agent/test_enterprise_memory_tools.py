@@ -14,6 +14,7 @@ from agent.memory_kernel.session_document_scope import DocumentScopeDecision
 from model_tools import get_tool_definitions
 from toolsets import resolve_toolset
 from run_agent import AIAgent, _ENTERPRISE_MEMORY_TOOL_GUIDANCE
+import run_agent as run_agent_module
 
 
 class FakeEnterpriseMemoryKernel:
@@ -328,6 +329,97 @@ def test_enterprise_memory_import_file_requires_post_bind_verification(monkeypat
     assert result["can_claim_alias_bound"] is False
     assert result["post_import_alias_verification_status"] in {"not_run", "failed", None}
     assert result["import_diagnostics_as_retrieval_evidence"] is False
+
+
+def test_enterprise_memory_import_file_success_reports_safe_alias(monkeypatch):
+    diagnostics = {
+        "ingestion_status": "upload_succeeded",
+        "import_failed_reason": None,
+        "document_id": "doc-import",
+        "version_id": "ver-import",
+        "chunk_count": 3,
+        "indexed_count": 3,
+        "alias_persisted": True,
+        "alias_status": "alias_bound",
+        "suggested_alias": "@演示文件",
+        "alias_resolution": {
+            "status": "alias_bound",
+            "alias": "演示文件",
+            "resolved_document_id": "doc-import",
+            "resolved_version_id": "ver-import",
+        },
+        "post_import_alias_verification_status": "passed",
+        "post_import_alias_verification_alias": "@演示文件",
+        "post_import_alias_verification_owner_source": "api_derived_session_id",
+        "workspace_context": {"workspace_name": "测试工作区", "document_category": "测试资料"},
+    }
+    monkeypatch.setattr(
+        run_agent_module,
+        "maybe_handle_natural_file_import",
+        lambda *args, **kwargs: SimpleNamespace(diagnostics=diagnostics),
+    )
+    agent = _make_agent(FakeEnterpriseMemoryKernel())
+    agent._persist_natural_import_alias = lambda _diagnostics: None
+
+    result = _loads(
+        agent._handle_enterprise_memory_tool(
+            "enterprise_memory_import_file",
+            {"path": "/Users/private/demo.docx", "alias": "@演示文件"},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["can_claim_file_remembered"] is True
+    assert result["can_claim_alias_bound"] is True
+    assert result["safe_alias"] == "@演示文件"
+    assert "别名：@演示文件" in result["final_response"]
+    assert "/Users/private" not in result["final_response"]
+
+
+def test_enterprise_memory_import_file_unsafe_or_unverified_alias_stays_incomplete(monkeypatch):
+    diagnostics = {
+        "ingestion_status": "upload_succeeded",
+        "import_failed_reason": None,
+        "document_id": "doc-import",
+        "version_id": "ver-import",
+        "chunk_count": 3,
+        "indexed_count": 3,
+        "alias_persisted": True,
+        "alias_status": "alias_bound",
+        "suggested_alias": "@/Users/private/demo",
+        "alias_resolution": {
+            "status": "alias_bound",
+            "alias": "/Users/private/demo",
+            "resolved_document_id": "doc-import",
+            "resolved_version_id": "ver-import",
+        },
+        "post_import_alias_verification_status": "failed",
+        "post_import_alias_verification_failure_reason": "alias_not_safe",
+        "workspace_context": {"workspace_name": "测试工作区", "document_category": "测试资料"},
+    }
+    monkeypatch.setattr(
+        run_agent_module,
+        "maybe_handle_natural_file_import",
+        lambda *args, **kwargs: SimpleNamespace(diagnostics=diagnostics),
+    )
+    agent = _make_agent(FakeEnterpriseMemoryKernel())
+    agent._persist_natural_import_alias = lambda _diagnostics: None
+
+    result = _loads(
+        agent._handle_enterprise_memory_tool(
+            "enterprise_memory_import_file",
+            {"path": "/Users/private/demo.docx", "alias": "@/Users/private/demo"},
+        )
+    )
+
+    assert result["success"] is False
+    assert result["can_claim_file_remembered"] is False
+    assert result["can_claim_alias_bound"] is False
+    assert result["safe_alias"] is None
+    assert "文件我已经记下了" not in result["final_response"]
+    assert "别名：" not in result["final_response"]
+    assert "别名还没有完成" in result["final_response"]
+    _assert_no_raw_storage_markers(result)
 
 
 def test_enterprise_memory_prompt_guidance_blocks_ordinary_file_authority():
