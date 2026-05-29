@@ -283,6 +283,14 @@
 
 - 已完成 deep-field trace display 映射最小修复：HermesMemoryAdapter / MemoryKernel 会将 Hermes_memory `metadata_deep_field_profile`、`deep_field_profile`、`deep_field_section_hints`、`deep_field_query_aliases`、`deep_field_missing_reason`、`deep_field_diagnostics` 从 retrieval trace 提升到主仓顶层 trace。
 - ContextBuilder 已新增 deep-field diagnostics 渲染行，明确 diagnostics 只是 routing / Missing Evidence 诊断，不替代 retrieval evidence。
+# Phase 2.121c
+
+- 修复 API-server / 8642 live route 默认 tool exposure：`api_server` 平台默认解析现在包含 `enterprise_memory` toolset。
+- `AIAgent.valid_tool_names` / model-visible tool definitions 覆盖 `enterprise_memory_search`、`enterprise_memory_import_file`、`enterprise_memory_find_files`、`enterprise_memory_resolve_alias`。
+- API server chat/responses route 增加 sanitized enterprise memory diagnostics：`enterprise_memory_tools_available`、`enterprise_memory_tools_sent_to_model`、`enterprise_memory_tool_call_names`、no-call reason。
+- 保留 2.121a enterprise memory tool-result sanitizer；generic `read_file/search_files/execute_code` 仍不得作为公司文件正文 authoritative evidence。
+- 下一步：准备 selective runtime candidate 后交 Codex C / 测试机重跑 8642 / OpenWebUI enterprise memory live-route 验收。
+
 - 已补一步 alias bind prompt：`锁定“标题”，并绑定为 @alias` 支持中文弯引号与 `绑定为 / 绑定成`。
 - 目标测试通过：py_compile 通过，`tests/agent/test_session_document_scope.py tests/agent/test_structured_citation_context.py` 为 `59 passed`。
 - 下一步需 Codex B review；若通过，交 Codex C 复验 Step 1 / Q1 / Q2 终端 trace 透出。

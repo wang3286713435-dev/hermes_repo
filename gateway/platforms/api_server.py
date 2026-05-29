@@ -57,6 +57,84 @@ MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+_ENTERPRISE_MEMORY_TOOL_NAMES = frozenset({
+    "enterprise_memory_search",
+    "enterprise_memory_import_file",
+    "enterprise_memory_find_files",
+    "enterprise_memory_resolve_alias",
+})
+
+
+def _tool_call_name(tool_call: Any) -> Optional[str]:
+    if isinstance(tool_call, dict):
+        function = tool_call.get("function")
+        if isinstance(function, dict):
+            name = function.get("name")
+            return str(name) if name else None
+        name = tool_call.get("name")
+        return str(name) if name else None
+
+    function = getattr(tool_call, "function", None)
+    name = getattr(function, "name", None) if function is not None else None
+    if name:
+        return str(name)
+    name = getattr(tool_call, "name", None)
+    return str(name) if name else None
+
+
+def _extract_enterprise_memory_tool_call_names(messages: Any) -> List[str]:
+    names: List[str] = []
+    if not isinstance(messages, list):
+        return names
+
+    for message in messages:
+        tool_calls = None
+        if isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
+        else:
+            tool_calls = getattr(message, "tool_calls", None)
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            name = _tool_call_name(tool_call)
+            if name in _ENTERPRISE_MEMORY_TOOL_NAMES:
+                names.append(name)
+    return sorted(set(names))
+
+
+def _build_enterprise_memory_live_route_diagnostics(
+    agent: Any,
+    result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    valid_tool_names = set(getattr(agent, "valid_tool_names", set()) or set())
+    available = sorted(_ENTERPRISE_MEMORY_TOOL_NAMES & valid_tool_names)
+    sent_to_model = _ENTERPRISE_MEMORY_TOOL_NAMES.issubset(valid_tool_names)
+    tool_call_names = _extract_enterprise_memory_tool_call_names(
+        result.get("messages", []) if isinstance(result, dict) else []
+    )
+
+    no_call_reason: Optional[str] = None
+    if not tool_call_names:
+        if not available:
+            no_call_reason = "enterprise_memory_tools_not_available_to_model"
+        elif not sent_to_model:
+            no_call_reason = "enterprise_memory_tools_partially_available_to_model"
+        else:
+            no_call_reason = "enterprise_memory_tools_available_but_not_called"
+
+    return {
+        "enterprise_memory_tools_available": bool(available),
+        "enterprise_memory_tools_sent_to_model": bool(sent_to_model),
+        "enterprise_memory_tool_call_names": tool_call_names,
+        "enterprise_memory_tool_no_call_reason": no_call_reason,
+    }
+
+
+def _enterprise_memory_diagnostics_from_result(result: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(result, dict):
+        return None
+    diagnostics = result.get("enterprise_memory_live_route_diagnostics")
+    return diagnostics if isinstance(diagnostics, dict) else None
 
 
 def _normalize_chat_content(
@@ -1048,6 +1126,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        diagnostics = _enterprise_memory_diagnostics_from_result(result)
+        if diagnostics:
+            response_data["hermes_diagnostics"] = {
+                "enterprise_memory": diagnostics,
+            }
 
         return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
 
@@ -1161,6 +1244,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     "total_tokens": usage.get("total_tokens", 0),
                 },
             }
+            diagnostics = _enterprise_memory_diagnostics_from_result(result if "result" in locals() else None)
+            if diagnostics:
+                finish_chunk["hermes_diagnostics"] = {
+                    "enterprise_memory": diagnostics,
+                }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
@@ -1285,6 +1373,7 @@ class APIServerAdapter(BasePlatformAdapter):
         final_response_text = ""
         agent_error: Optional[str] = None
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        result: Optional[Dict[str, Any]] = None
 
         try:
             # response.created — initial envelope, status=in_progress
@@ -1550,6 +1639,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
+                diagnostics = _enterprise_memory_diagnostics_from_result(result)
+                if diagnostics:
+                    failed_env["metadata"] = {
+                        "hermes_diagnostics": {
+                            "enterprise_memory": diagnostics,
+                        }
+                    }
                 await _write_event("response.failed", {
                     "type": "response.failed",
                     "response": failed_env,
@@ -1562,6 +1658,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
+                diagnostics = _enterprise_memory_diagnostics_from_result(result)
+                if diagnostics:
+                    completed_env["metadata"] = {
+                        "hermes_diagnostics": {
+                            "enterprise_memory": diagnostics,
+                        }
+                    }
                 await _write_event("response.completed", {
                     "type": "response.completed",
                     "response": completed_env,
@@ -1849,6 +1952,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        diagnostics = _enterprise_memory_diagnostics_from_result(result)
+        if diagnostics:
+            response_data["metadata"] = {
+                "hermes_diagnostics": {
+                    "enterprise_memory": diagnostics,
+                }
+            }
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
@@ -2245,6 +2355,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 task_id="default",
             )
+            if isinstance(result, dict):
+                result["enterprise_memory_live_route_diagnostics"] = (
+                    _build_enterprise_memory_live_route_diagnostics(agent, result)
+                )
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

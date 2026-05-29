@@ -35,6 +35,12 @@ def test_get_platform_tools_default_telegram_includes_messaging():
     assert "messaging" in enabled
 
 
+def test_get_platform_tools_default_api_server_includes_enterprise_memory():
+    enabled = _get_platform_tools({}, "api_server")
+
+    assert "enterprise_memory" in enabled
+
+
 def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset():
     enabled = _get_platform_tools({}, "homeassistant")
 
