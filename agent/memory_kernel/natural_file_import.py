@@ -142,7 +142,11 @@ def _extract_paths(text: str) -> list[str]:
 
 
 def _clean_path(path: str) -> str:
-    return path.strip().rstrip("，,。；;！？!?)）]")
+    cleaned = path.strip().rstrip("，,。；;！？!?)）]")
+    cleaned = re.sub(r"\\([\\\s'\"()\[\]{}&;!?,])", r"\1", cleaned)
+    cleaned = re.sub(r"\s+/", "/", cleaned)
+    cleaned = re.sub(r"/\s+", "/", cleaned)
+    return cleaned
 
 
 def _extract_optional(pattern: re.Pattern[str], text: str) -> str | None:

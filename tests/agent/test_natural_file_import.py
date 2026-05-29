@@ -36,7 +36,7 @@ def test_parse_single_quoted_pdf_path_with_spaces():
     )
 
     assert request.detected is True
-    assert request.source_path == "/Users/vc/Documents/New project/hermes训练文件 /PDF资料/数据中台体系建设方案.pdf"
+    assert request.source_path == "/Users/vc/Documents/New project/hermes训练文件/PDF资料/数据中台体系建设方案.pdf"
     assert request.alias == "数据中台体系建设方案"
     assert request.failed_reason is None
 
@@ -72,7 +72,18 @@ def test_parse_unquoted_path_with_chinese_characters_and_spaces():
     )
 
     assert request.detected is True
-    assert request.source_path == "/Users/vc/Documents/New project/hermes训练文件 /表格/建筑类数据_20260519.xlsx"
+    assert request.source_path == "/Users/vc/Documents/New project/hermes训练文件/表格/建筑类数据_20260519.xlsx"
+    assert request.alias == "建筑类数据样表"
+    assert request.failed_reason is None
+
+
+def test_parse_shell_escaped_spaces_in_import_path():
+    request = parse_natural_file_import(
+        "请导入文件路径：/Users/vc/Documents/New\\ project/hermes训练文件/表格/建筑类数据_20260519.xlsx，别名设为 @建筑类数据样表"
+    )
+
+    assert request.detected is True
+    assert request.source_path == "/Users/vc/Documents/New project/hermes训练文件/表格/建筑类数据_20260519.xlsx"
     assert request.alias == "建筑类数据样表"
     assert request.failed_reason is None
 
