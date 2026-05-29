@@ -50,6 +50,9 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Governed enterprise memory tools
+    "enterprise_memory_search", "enterprise_memory_import_file",
+    "enterprise_memory_find_files", "enterprise_memory_resolve_alias",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -173,6 +176,17 @@ TOOLSETS = {
         "tools": ["session_search"],
         "includes": []
     },
+
+    "enterprise_memory": {
+        "description": "Governed enterprise memory retrieval, import, file discovery, and alias resolution",
+        "tools": [
+            "enterprise_memory_search",
+            "enterprise_memory_import_file",
+            "enterprise_memory_find_files",
+            "enterprise_memory_resolve_alias",
+        ],
+        "includes": []
+    },
     
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
@@ -279,6 +293,9 @@ TOOLSETS = {
             "todo", "memory",
             # Session history search
             "session_search",
+            # Governed enterprise memory
+            "enterprise_memory_search", "enterprise_memory_import_file",
+            "enterprise_memory_find_files", "enterprise_memory_resolve_alias",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management

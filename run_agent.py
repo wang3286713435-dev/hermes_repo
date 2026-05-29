@@ -128,6 +128,26 @@ from agent.codex_responses_adapter import (
     _summarize_user_message_for_log,
 )
 
+_ENTERPRISE_MEMORY_TOOL_NAMES = {
+    "enterprise_memory_search",
+    "enterprise_memory_import_file",
+    "enterprise_memory_find_files",
+    "enterprise_memory_resolve_alias",
+}
+
+_ENTERPRISE_MEMORY_TOOL_GUIDANCE = (
+    "# Enterprise memory tools\n"
+    "- For company/enterprise files, imported documents, aliases, tenders, spreadsheets, PPTX, "
+    "meeting transcripts, citations, or Missing Evidence decisions, use enterprise_memory tools "
+    "before answering.\n"
+    "- Do not treat read_file, search_files, execute_code, attachment metadata, import diagnostics, "
+    "history memory, or confirmed facts as authoritative company-file content evidence.\n"
+    "- enterprise_memory_search is the answer-evidence path. If it returns Missing Evidence, say "
+    "Missing Evidence / needs manual review instead of guessing.\n"
+    "- enterprise_memory_import_file may claim a file is remembered only when upload, alias persistence, "
+    "and post-bind verification all pass.\n"
+)
+
 
 def _none_if_text_null(value: Any) -> str | None:
     if value is None:
@@ -3285,6 +3305,437 @@ class AIAgent:
             failure_reason=reason,
         )
 
+    def _handle_enterprise_memory_tool(self, function_name: str, function_args: dict) -> str:
+        """Execute first-class enterprise memory tools against the session kernel."""
+
+        if function_name not in _ENTERPRISE_MEMORY_TOOL_NAMES:
+            return json.dumps({"success": False, "error": f"unknown_enterprise_memory_tool:{function_name}"})
+        if not self._memory_kernel:
+            return self._enterprise_memory_json(
+                function_name,
+                {
+                    "success": False,
+                    "error": "memory_kernel_unavailable",
+                    "requires_retrieval_evidence": True,
+                    "facts_as_answer": False,
+                    "snapshot_as_answer": False,
+                    "transcript_as_fact": False,
+                },
+            )
+        try:
+            if function_name == "enterprise_memory_search":
+                return self._enterprise_memory_search(function_args)
+            if function_name == "enterprise_memory_find_files":
+                return self._enterprise_memory_find_files(function_args)
+            if function_name == "enterprise_memory_resolve_alias":
+                return self._enterprise_memory_resolve_alias(function_args)
+            if function_name == "enterprise_memory_import_file":
+                return self._enterprise_memory_import_file(function_args)
+        except Exception as exc:
+            logger.warning("Enterprise memory tool %s failed: %s", function_name, exc)
+            return self._enterprise_memory_json(
+                function_name,
+                {
+                    "success": False,
+                    "error": type(exc).__name__,
+                    "error_message": str(exc),
+                    "requires_retrieval_evidence": True,
+                    "facts_as_answer": False,
+                    "snapshot_as_answer": False,
+                    "transcript_as_fact": False,
+                },
+            )
+        return self._enterprise_memory_json(function_name, {"success": False, "error": "unhandled_tool"})
+
+    def _enterprise_memory_json(self, tool: str, payload: dict[str, Any]) -> str:
+        base = {
+            "tool": tool,
+            "enterprise_memory_tool_used": True,
+            "read_file_as_content_evidence": False,
+            "search_files_as_company_file_authority": False,
+            "execute_code_as_content_evidence": False,
+            "facts_as_answer": False,
+            "snapshot_as_answer": False,
+            "transcript_as_fact": False,
+        }
+        base.update(payload or {})
+        base = self._enterprise_memory_sanitize_payload(base)
+        return json.dumps(base, ensure_ascii=False, indent=2)
+
+    def _enterprise_memory_resolve_scope(
+        self,
+        *,
+        query: str,
+        filters: dict[str, Any] | None = None,
+    ) -> DocumentScopeDecision:
+        self._register_alias_continuity_owner()
+        self._register_workspace_file_registry_owner()
+        if hasattr(self._memory_kernel, "resolve_document_scope"):
+            return self._memory_kernel.resolve_document_scope(
+                session_id=self.session_id or "",
+                query=query,
+                filters=dict(filters or {}),
+            )
+        return DocumentScopeDecision(
+            filters=dict(filters or {}),
+            trace={
+                "scope_resolution_status": "scope_resolution_unavailable",
+                "document_scope_source": "memory_kernel_missing_resolver",
+                "document_scope_changed": False,
+                "cross_document_allowed": False,
+                "suppress_retrieval": False,
+            },
+        )
+
+    def _enterprise_memory_search(self, args: dict[str, Any]) -> str:
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return self._enterprise_memory_json(
+                "enterprise_memory_search",
+                {"success": False, "error": "missing_query"},
+            )
+        filters = {}
+        document_id = str(args.get("document_id") or "").strip()
+        version_id = str(args.get("version_id") or "").strip()
+        if document_id:
+            filters["document_id"] = document_id
+        if version_id:
+            filters["version_id"] = version_id
+        alias = str(args.get("alias") or "").strip()
+        scope_query = query
+        if alias and f"@{alias.lstrip('@')}" not in query:
+            scope_query = f"@{alias.lstrip('@')} {query}"
+        decision = self._enterprise_memory_resolve_scope(query=scope_query, filters=filters)
+        if decision.suppress_retrieval:
+            return self._enterprise_memory_json(
+                "enterprise_memory_search",
+                {
+                    "success": True,
+                    "missing_evidence": True,
+                    "retrieval_suppressed": True,
+                    "message": "Missing Evidence / needs manual review.",
+                    "scope_trace": self._enterprise_memory_safe_trace(decision.trace),
+                    "retrieval_evidence_document_ids": [],
+                    "citations": [],
+                },
+            )
+        top_k = self._enterprise_memory_int(args.get("top_k"), default=getattr(self._memory_kernel_config, "top_k", 8) or 8)
+        top_k = max(1, min(top_k, 20))
+        retrieval_mode = str(args.get("retrieval_mode") or "hybrid")
+        if retrieval_mode not in {"hybrid", "sparse", "dense"}:
+            retrieval_mode = "hybrid"
+        request = KernelRequest(
+            query=query,
+            session_id=self.session_id or "",
+            user_id=getattr(self, "_user_id", None),
+            top_k=top_k,
+            filters=decision.filters,
+            retrieval_mode=retrieval_mode,
+            enable_dense=retrieval_mode in {"hybrid", "dense"},
+            enable_sparse=retrieval_mode in {"hybrid", "sparse"},
+            enable_hybrid=retrieval_mode == "hybrid",
+            document_scope=decision.trace,
+            allowed_document_ids=decision.allowed_document_ids,
+            cross_document_allowed=decision.cross_document_allowed,
+        )
+        result = self._memory_kernel.start_turn(request)
+        returned_document_ids = self._enterprise_memory_returned_document_ids(result)
+        missing_evidence = not (result.retrieval.items or result.retrieval.citations)
+        return self._enterprise_memory_json(
+            "enterprise_memory_search",
+            {
+                "success": True,
+                "missing_evidence": missing_evidence,
+                "message": "Missing Evidence / needs manual review." if missing_evidence else "retrieval_evidence_available",
+                "retrieval_evidence_required": True,
+                "retrieval_evidence_document_ids": returned_document_ids,
+                "retrieval_mode": result.retrieval.retrieval_mode,
+                "dense_retrieval_status": result.retrieval.dense_retrieval_status,
+                "sparse_retrieval_status": result.retrieval.sparse_retrieval_status,
+                "applied_filters": result.retrieval.applied_filters,
+                "scope_trace": self._enterprise_memory_safe_trace(decision.trace),
+                "trace": result.trace,
+                "evidence": self._enterprise_memory_evidence(result),
+                "citations": self._enterprise_memory_citations(result),
+                "answer_policy": {
+                    "requires_retrieval_evidence": True,
+                    "missing_evidence_policy": "Missing Evidence / needs manual review",
+                    "facts_as_answer": False,
+                    "snapshot_as_answer": False,
+                    "transcript_as_fact": False,
+                },
+            },
+        )
+
+    def _enterprise_memory_find_files(self, args: dict[str, Any]) -> str:
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return self._enterprise_memory_json(
+                "enterprise_memory_find_files",
+                {"success": False, "error": "missing_query", "candidates": []},
+            )
+        limit = max(1, min(self._enterprise_memory_int(args.get("limit"), default=8), 20))
+        decision = self._enterprise_memory_resolve_scope(query=query, filters={})
+        candidates = self._enterprise_memory_file_candidates(decision.trace)[:limit]
+        if not candidates and decision.allowed_document_ids:
+            candidates = [
+                {
+                    "document_id": document_id,
+                    "version_id": decision.filters.get("version_id"),
+                    "title": decision.trace.get("active_document_title"),
+                    "match_reason": decision.trace.get("scope_resolution_status"),
+                }
+                for document_id in decision.allowed_document_ids[:limit]
+            ]
+        return self._enterprise_memory_json(
+            "enterprise_memory_find_files",
+            {
+                "success": True,
+                "candidates": candidates,
+                "requires_clarification": bool(decision.trace.get("file_discovery_requires_clarification")),
+                "suppress_retrieval": decision.suppress_retrieval,
+                "scope_trace": self._enterprise_memory_safe_trace(decision.trace),
+                "raw_paths_exposed": False,
+            },
+        )
+
+    def _enterprise_memory_resolve_alias(self, args: dict[str, Any]) -> str:
+        alias = str(args.get("alias") or "").strip().lstrip("@")
+        if not alias:
+            return self._enterprise_memory_json(
+                "enterprise_memory_resolve_alias",
+                {"success": False, "error": "missing_alias"},
+            )
+        decision = self._enterprise_memory_resolve_scope(query=f"围绕 @{alias} 回答", filters={})
+        alias_resolution = decision.trace.get("alias_resolution")
+        if not isinstance(alias_resolution, dict):
+            alias_resolution = {}
+        resolved_document_id = (
+            decision.filters.get("document_id")
+            or alias_resolution.get("resolved_document_id")
+            or decision.trace.get("active_document_id")
+        )
+        resolved_version_id = (
+            decision.filters.get("version_id")
+            or alias_resolution.get("resolved_version_id")
+            or decision.trace.get("active_document_version_id")
+        )
+        resolved = bool(resolved_document_id and not decision.suppress_retrieval and not decision.trace.get("alias_missing"))
+        return self._enterprise_memory_json(
+            "enterprise_memory_resolve_alias",
+            {
+                "success": True,
+                "alias": f"@{alias}",
+                "resolved": resolved,
+                "resolved_document_id": resolved_document_id,
+                "resolved_version_id": resolved_version_id,
+                "alias_missing": bool(decision.trace.get("alias_missing")),
+                "retrieval_suppressed": decision.suppress_retrieval,
+                "scope_trace": self._enterprise_memory_safe_trace(decision.trace),
+            },
+        )
+
+    def _enterprise_memory_import_file(self, args: dict[str, Any]) -> str:
+        path = str(args.get("path") or "").strip()
+        if not path:
+            return self._enterprise_memory_json(
+                "enterprise_memory_import_file",
+                {"success": False, "error": "missing_path"},
+            )
+        text_parts = [f"请上传 {path} 到企业记忆"]
+        alias = str(args.get("alias") or "").strip().lstrip("@")
+        if alias:
+            text_parts.append(f"绑定为 @{alias}")
+        title = str(args.get("title") or "").strip()
+        if title:
+            text_parts.append(f"标题叫 {title}")
+        document_type = str(args.get("document_type") or "").strip()
+        if document_type:
+            text_parts.append(f"document_type={document_type}")
+        source_type = str(args.get("source_type") or "").strip() or "manual"
+        if source_type:
+            text_parts.append(f"source_type={source_type}")
+        import_text = "，".join(text_parts)
+        upload_enabled = env_var_enabled("HERMES_NATURAL_IMPORT_REAL_UPLOAD_ENABLED", default=False)
+        upload_client = HermesMemoryUploadClient()
+        upload_adapter = FeatureFlaggedHermesMemoryUploadAdapter(
+            client=upload_client,
+            enabled=upload_enabled,
+        )
+        response = maybe_handle_natural_file_import(
+            import_text,
+            upload_adapter=upload_adapter,
+            real_upload_enabled=upload_enabled,
+        )
+        if response is None:
+            return self._enterprise_memory_json(
+                "enterprise_memory_import_file",
+                {"success": False, "error": "import_intent_not_detected"},
+            )
+        diagnostics = response.diagnostics
+        diagnostics["api_session_key_source"] = self._api_session_key_source()
+        self._persist_natural_import_alias(diagnostics)
+        final_response = render_natural_file_import_response(diagnostics)
+        final_response = sanitize_user_visible_storage_paths(final_response)
+        alias_resolution = diagnostics.get("alias_resolution")
+        if not isinstance(alias_resolution, dict):
+            alias_resolution = {}
+        post_bind_status = diagnostics.get("post_import_alias_verification_status")
+        success = bool(
+            diagnostics.get("ingestion_status") == "upload_succeeded"
+            and post_bind_status == "passed"
+            and alias_resolution.get("resolved_document_id")
+            and alias_resolution.get("resolved_version_id")
+        )
+        return self._enterprise_memory_json(
+            "enterprise_memory_import_file",
+            {
+                "success": success,
+                "ingestion_status": diagnostics.get("ingestion_status"),
+                "import_failed_reason": diagnostics.get("import_failed_reason"),
+                "alias_resolution": alias_resolution,
+                "post_import_alias_verification_status": post_bind_status,
+                "post_import_alias_verification_failure_reason": diagnostics.get(
+                    "post_import_alias_verification_failure_reason"
+                ),
+                "document_id": diagnostics.get("document_id"),
+                "version_id": diagnostics.get("version_id"),
+                "chunk_count": diagnostics.get("chunk_count"),
+                "indexed_count": diagnostics.get("indexed_count"),
+                "can_claim_file_remembered": success,
+                "can_claim_alias_bound": success,
+                "final_response": final_response,
+                "raw_path_exposed": False,
+                "import_diagnostics_as_retrieval_evidence": False,
+                "requires_retrieval_evidence": True,
+            },
+        )
+
+    @staticmethod
+    def _enterprise_memory_int(value: Any, *, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
+    @staticmethod
+    def _enterprise_memory_file_candidates(trace: dict[str, Any]) -> list[dict[str, Any]]:
+        allowed_keys = {
+            "alias",
+            "document_id",
+            "version_id",
+            "title",
+            "source_name",
+            "workspace_id",
+            "workspace_name",
+            "workspace_type",
+            "document_category",
+            "workspace_confidence",
+            "workspace_needs_user_confirmation",
+            "content_evidence_status",
+            "retrieval_ready",
+            "match_reason",
+        }
+        raw_candidates = trace.get("file_candidates")
+        if not isinstance(raw_candidates, list):
+            raw_candidates = []
+        candidates: list[dict[str, Any]] = []
+        for candidate in raw_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            safe = {key: candidate.get(key) for key in allowed_keys if key in candidate}
+            if safe:
+                candidates.append(safe)
+        return candidates
+
+    @classmethod
+    def _enterprise_memory_safe_trace(cls, trace: dict[str, Any]) -> dict[str, Any]:
+        safe_trace = dict(trace or {})
+        if "file_candidates" in safe_trace:
+            safe_trace["file_candidates"] = cls._enterprise_memory_file_candidates(safe_trace)
+        sanitized = cls._enterprise_memory_sanitize_payload(safe_trace)
+        return sanitized if isinstance(sanitized, dict) else {}
+
+    @classmethod
+    def _enterprise_memory_sanitize_payload(cls, value: Any) -> Any:
+        unsafe_keys = {
+            "path",
+            "source_path",
+            "source_uri",
+            "storage_path",
+            "storage_uri",
+            "raw_path",
+            "local_path",
+            "absolute_path",
+            "nas_path",
+        }
+        if isinstance(value, dict):
+            sanitized: dict[str, Any] = {}
+            for key, nested_value in value.items():
+                if str(key).lower() in unsafe_keys:
+                    continue
+                sanitized[key] = cls._enterprise_memory_sanitize_payload(nested_value)
+            return sanitized
+        if isinstance(value, list):
+            return [cls._enterprise_memory_sanitize_payload(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._enterprise_memory_sanitize_payload(item) for item in value]
+        if isinstance(value, str):
+            return sanitize_user_visible_storage_paths(value)
+        return value
+
+    @staticmethod
+    def _enterprise_memory_returned_document_ids(result: Any) -> list[str]:
+        ids: list[str] = []
+        for item in list(getattr(result.retrieval, "items", []) or []) + list(getattr(result.retrieval, "citations", []) or []):
+            document_id = getattr(item, "document_id", None)
+            if document_id and document_id not in ids:
+                ids.append(str(document_id))
+        return ids
+
+    @staticmethod
+    def _enterprise_memory_evidence(result: Any) -> list[dict[str, Any]]:
+        evidence = []
+        for index, item in enumerate(getattr(result.retrieval, "items", []) or [], start=1):
+            evidence.append(
+                {
+                    "label": f"E{index}",
+                    "document_id": item.document_id,
+                    "version_id": item.version_id,
+                    "chunk_id": item.chunk_id,
+                    "source_name": item.source_name,
+                    "score": item.score,
+                    "heading_path": item.heading_path,
+                    "section_path": item.section_path,
+                    "page_start": item.page_start,
+                    "page_end": item.page_end,
+                    "metadata": item.metadata,
+                    "text": (item.text or "")[:1200],
+                }
+            )
+        return evidence
+
+    @staticmethod
+    def _enterprise_memory_citations(result: Any) -> list[dict[str, Any]]:
+        citations = []
+        for index, citation in enumerate(getattr(result.retrieval, "citations", []) or [], start=1):
+            citations.append(
+                {
+                    "label": f"C{index}",
+                    "document_id": citation.document_id,
+                    "version_id": citation.version_id,
+                    "chunk_id": citation.chunk_id,
+                    "source_name": citation.source_name,
+                    "heading_path": citation.heading_path,
+                    "section_path": citation.section_path,
+                    "page_start": citation.page_start,
+                    "page_end": citation.page_end,
+                    "metadata": citation.metadata,
+                    "quote_text": (citation.quote_text or "")[:600],
+                }
+            )
+        return citations
+
     def _api_session_key_source(self) -> str:
         if getattr(self, "_gateway_session_key", None):
             return "gateway_session_key"
@@ -4560,6 +5011,8 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        if any(name in self.valid_tool_names for name in _ENTERPRISE_MEMORY_TOOL_NAMES):
+            tool_guidance.append(_ENTERPRISE_MEMORY_TOOL_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -8203,6 +8656,8 @@ class AIAgent:
             return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
+        elif function_name in _ENTERPRISE_MEMORY_TOOL_NAMES:
+            return self._handle_enterprise_memory_tool(function_name, function_args)
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
@@ -8810,6 +9265,28 @@ class AIAgent:
                 finally:
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
+                    if spinner:
+                        spinner.stop(cute_msg)
+                    elif self._should_emit_quiet_tool_messages():
+                        self._vprint(f"  {cute_msg}")
+            elif function_name in _ENTERPRISE_MEMORY_TOOL_NAMES:
+                spinner = None
+                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
+                    face = random.choice(KawaiiSpinner.get_waiting_faces())
+                    emoji = _get_tool_emoji(function_name)
+                    preview = _build_tool_preview(function_name, function_args) or function_name
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
+                    spinner.start()
+                _enterprise_result = None
+                try:
+                    function_result = self._handle_enterprise_memory_tool(function_name, function_args)
+                    _enterprise_result = function_result
+                except Exception as tool_error:
+                    function_result = f"Error executing tool '{function_name}': {tool_error}"
+                    logger.error("_handle_enterprise_memory_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+                finally:
+                    tool_duration = time.time() - tool_start_time
+                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_enterprise_result)
                     if spinner:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():

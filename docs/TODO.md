@@ -1,5 +1,21 @@
 # TODO
 
+## Phase 2.121a
+
+- Implemented the Codex B review fix for enterprise memory tool-result sanitizer.
+- `enterprise_memory_search` now recursively sanitizes evidence, citations, metadata, trace, and scope trace before returning JSON to the model.
+- `enterprise_memory_find_files` candidate `title/source_name` values are sanitized if they contain raw local paths or URI schemes.
+- Unsafe keys such as `source_uri`, `storage_path`, `storage_uri`, `raw_path`, `local_path`, `absolute_path`, `nas_path`, `source_path`, and `path` are omitted from enterprise memory tool results.
+- Verification passed: targeted sanitizer tests `9 passed`; enterprise memory + session scope `93 passed`; natural import regression `92 passed`; py_compile and `git diff --check` passed.
+- Next: Codex B review before any runtime candidate / tag / push.
+
+## Phase 2.121
+
+- 本地最小实现进行中：新增 model-visible `enterprise_memory` toolset，包含 `enterprise_memory_search` / `enterprise_memory_import_file` / `enterprise_memory_find_files` / `enterprise_memory_resolve_alias`。
+- 目标：公司文件问题优先走 governed enterprise memory retrieval / import / alias / file discovery，不把 `read_file/search_files/execute_code` 当作企业文件正文 evidence。
+- `run_agent.py` 已接入 agent-level dispatch，使这些工具可访问 session-scoped memory kernel / alias / workspace registry。
+- 当前仍未 baseline；下一步需完成全量目标测试、Codex B review，并由 Codex C / 测试机做 OpenWebUI live validation。
+
 ## Phase 2.120
 
 - 本地最小实现已完成，待 Codex B review；不得直接进入 runtime candidate / stable freeze。
