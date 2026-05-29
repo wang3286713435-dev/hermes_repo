@@ -247,6 +247,250 @@ def test_natural_import_alias_continuity_restores_after_store_reload(tmp_path):
     assert decision.trace["alias_resolution"]["alias_continuity_persistent"] is True
 
 
+def test_workspace_file_registry_resolves_alias_across_new_conversation_same_owner(tmp_path):
+    storage_path = tmp_path / "scope.json"
+    store = SessionDocumentScopeStore(storage_path)
+    store.set_file_registry_owner(
+        session_id="conversation-a",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+    stored = store.remember_workspace_file_registry(
+        session_id="conversation-a",
+        alias="C塔方案",
+        document_id="doc-c-tower",
+        version_id="ver-c-tower",
+        title="/Users/alice/private/深圳湾超总C塔数字化交付解决方案PPT大纲V1.0.docx",
+        source_name="file:///Users/alice/private/深圳湾超总C塔数字化交付解决方案PPT大纲V1.0.docx",
+        workspace_context={
+            "workspace_id": "ws-ctower",
+            "workspace_name": "C塔项目",
+            "workspace_type": "project",
+            "document_category": "方案",
+            "confidence": "high",
+            "needs_user_confirmation": False,
+        },
+        content_evidence_status="indexed",
+        source="natural_import_success",
+    )
+
+    reloaded = SessionDocumentScopeStore(storage_path)
+    reloaded.set_file_registry_owner(
+        session_id="conversation-b",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+    decision = reloaded.resolve(
+        session_id="conversation-b",
+        query="@C塔方案 总结重点，并给出 citation",
+        filters={},
+        resolver=lambda _titles, _filters: [],
+    )
+
+    assert stored["workspace_file_registry_status"] == "stored"
+    assert decision.suppress_retrieval is False
+    assert decision.filters["document_id"] == "doc-c-tower"
+    assert decision.filters["version_id"] == "ver-c-tower"
+    assert decision.trace["scope_resolution_status"] == "alias_resolved"
+    assert decision.trace["workspace_file_registry_status"] == "resolved"
+    assert decision.trace["alias_resolution"]["alias_scope"] == "workspace_file_registry"
+    assert decision.trace["content_evidence_status"] == "indexed"
+    assert decision.trace["requires_retrieval_evidence"] is True
+
+
+def test_workspace_file_registry_different_owner_does_not_restore_alias(tmp_path):
+    storage_path = tmp_path / "scope.json"
+    store = SessionDocumentScopeStore(storage_path)
+    store.set_file_registry_owner(
+        session_id="conversation-a",
+        owner_value="profile:owner-a",
+        owner_source="active_profile",
+    )
+    store.remember_workspace_file_registry(
+        session_id="conversation-a",
+        alias="C塔方案",
+        document_id="doc-c-tower",
+        version_id="ver-c-tower",
+        title="C塔方案.docx",
+        source_name="C塔方案.docx",
+        workspace_context={"workspace_name": "C塔项目", "confidence": "high"},
+        content_evidence_status="indexed",
+    )
+
+    reloaded = SessionDocumentScopeStore(storage_path)
+    reloaded.set_file_registry_owner(
+        session_id="conversation-b",
+        owner_value="profile:owner-b",
+        owner_source="active_profile",
+    )
+    decision = reloaded.resolve(
+        session_id="conversation-b",
+        query="@C塔方案 总结重点",
+        filters={},
+        resolver=lambda _titles, _filters: [],
+    )
+
+    assert decision.suppress_retrieval is True
+    assert "document_id" not in decision.filters
+    assert decision.trace["scope_resolution_status"] == "alias_missing"
+    assert decision.trace["workspace_file_registry_status"] == "not_found"
+
+
+def test_workspace_file_registry_fuzzy_single_candidate_scopes_body_retrieval(tmp_path):
+    store = SessionDocumentScopeStore(tmp_path / "scope.json")
+    store.set_file_registry_owner(
+        session_id="conversation-a",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+    store.remember_workspace_file_registry(
+        session_id="conversation-a",
+        alias="C塔智能化标准",
+        document_id="doc-standard",
+        version_id="ver-standard",
+        title="深圳湾超总C塔数字化交付解决方案PPT大纲V1.0.docx",
+        source_name="深圳湾超总C塔数字化交付解决方案PPT大纲V1.0.docx",
+        workspace_context={
+            "workspace_name": "C塔项目",
+            "workspace_type": "project",
+            "document_category": "智能化标准",
+            "confidence": "high",
+            "needs_user_confirmation": False,
+        },
+        content_evidence_status="indexed",
+    )
+
+    reloaded = SessionDocumentScopeStore(tmp_path / "scope.json")
+    reloaded.set_file_registry_owner(
+        session_id="conversation-b",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+    decision = reloaded.resolve(
+        session_id="conversation-b",
+        query="C塔智能化专业的标准有哪些？",
+        filters={},
+        resolver=lambda _titles, _filters: [],
+    )
+
+    assert decision.suppress_retrieval is False
+    assert decision.trace["scope_resolution_status"] == "file_discovery_single_candidate_scoped"
+    assert decision.trace["file_candidates"][0]["match_reason"] == "workspace_file_registry_fuzzy_match"
+    assert decision.filters["document_id"] == "doc-standard"
+    assert decision.filters["version_id"] == "ver-standard"
+
+
+def test_workspace_file_registry_missing_evidence_returns_missing_evidence_boundary(tmp_path):
+    store = SessionDocumentScopeStore(tmp_path / "scope.json")
+    store.set_file_registry_owner(
+        session_id="conversation-a",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+    store.remember_workspace_file_registry(
+        session_id="conversation-a",
+        alias="C塔方案",
+        document_id="doc-c-tower",
+        version_id="ver-c-tower",
+        title="C塔方案.docx",
+        source_name="C塔方案.docx",
+        workspace_context={"workspace_name": "C塔项目", "confidence": "high"},
+        content_evidence_status="missing",
+    )
+
+    reloaded = SessionDocumentScopeStore(tmp_path / "scope.json")
+    reloaded.set_file_registry_owner(
+        session_id="conversation-b",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+    decision = reloaded.resolve(
+        session_id="conversation-b",
+        query="@C塔方案 总结重点，并给出引用",
+        filters={},
+        resolver=lambda _titles, _filters: [],
+    )
+
+    assert decision.suppress_retrieval is True
+    assert "document_id" not in decision.filters
+    assert decision.trace["workspace_file_registry_status"] == "evidence_missing"
+    assert decision.trace["content_evidence_status"] == "missing"
+    assert decision.trace["missing_evidence_policy"] == "Missing Evidence"
+    assert decision.trace["requires_retrieval_evidence"] is True
+
+
+def test_workspace_file_registry_compare_resolves_two_aliases_from_new_conversation(tmp_path):
+    storage_path = tmp_path / "scope.json"
+    store = SessionDocumentScopeStore(storage_path)
+    store.set_file_registry_owner(
+        session_id="conversation-a",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+    for alias, document_id, version_id in [
+        ("主标书", "doc-tender", "ver-tender"),
+        ("会议纪要", "doc-meeting", "ver-meeting"),
+    ]:
+        store.remember_workspace_file_registry(
+            session_id="conversation-a",
+            alias=alias,
+            document_id=document_id,
+            version_id=version_id,
+            title=f"{alias}.docx",
+            source_name=f"{alias}.docx",
+            workspace_context={"workspace_name": "测试项目", "confidence": "high"},
+            content_evidence_status="indexed",
+        )
+
+    reloaded = SessionDocumentScopeStore(storage_path)
+    reloaded.set_file_registry_owner(
+        session_id="conversation-b",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+    decision = reloaded.resolve(
+        session_id="conversation-b",
+        query="对比 @会议纪要 和 @主标书",
+        filters={},
+        resolver=lambda _titles, _filters: [],
+    )
+
+    assert decision.suppress_retrieval is False
+    assert decision.cross_document_allowed is True
+    assert decision.allowed_document_ids == ["doc-meeting", "doc-tender"]
+    assert decision.trace["compare_document_ids"] == ["doc-meeting", "doc-tender"]
+    assert decision.trace["alias_resolution"]["compare_version_ids"] == ["ver-meeting", "ver-tender"]
+
+
+def test_workspace_file_registry_persists_low_sensitive_fields_only(tmp_path):
+    storage_path = tmp_path / "scope.json"
+    store = SessionDocumentScopeStore(storage_path)
+    store.set_file_registry_owner(
+        session_id="conversation-a",
+        owner_value="profile:enterprise-user",
+        owner_source="active_profile",
+    )
+
+    store.remember_workspace_file_registry(
+        session_id="conversation-a",
+        alias="敏感方案",
+        document_id="doc-safe",
+        version_id="ver-safe",
+        title="/Users/alice/secret/敏感方案.docx",
+        source_name="nas://company/secret/敏感方案.docx",
+        workspace_context={"workspace_name": "C塔项目", "confidence": "high"},
+        content_evidence_status="indexed",
+    )
+
+    raw = storage_path.read_text(encoding="utf-8")
+    assert "敏感方案.docx" in raw
+    assert "/Users/alice" not in raw
+    assert "nas://company" not in raw
+    assert "file://" not in raw
+    assert "profile:enterprise-user" not in raw
+    assert "file_registry" in raw
+
+
 def test_alias_continuity_different_owner_does_not_restore_imported_alias():
     store = SessionDocumentScopeStore()
     store.set_continuity_owner(

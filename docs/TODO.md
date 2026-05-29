@@ -1,5 +1,14 @@
 # TODO
 
+## Phase 2.120
+
+- 本地最小实现已完成，待 Codex B review；不得直接进入 runtime candidate / stable freeze。
+- 新增 owner-scoped Workspace File Registry：natural import post-bind verification 通过后写入低敏 locator，支持同一 owner 的新 OpenWebUI conversation 恢复 `@alias`。
+- Registry alias / fuzzy discovery / compare 均只生成 scoped `document_id/version_id` retrieval；registry-only evidence missing 返回 Missing Evidence，不直接读文件。
+- 安全边界：不同 owner 不恢复；registry 不保存 raw path、NAS/file URI、raw owner、file content、secret、diagnostics。
+- 验证：py_compile passed；session scope tests `84 passed`；natural import runtime tests `48 passed`；natural import flow/parser tests `44 passed`；`git diff --check` passed。
+- 下一步：Codex B review；通过后准备 selective runtime candidate，并由 Codex C 真实验证 Conversation A 导入 -> Conversation B alias/fuzzy retrieval。
+
 ## Phase 2.119d
 
 - 本地最小修复已完成，待 Codex B review；不得直接进入 runtime candidate / Phase 2.120。

@@ -54,6 +54,28 @@ class FileAliasBinding:
 
 
 @dataclass(frozen=True)
+class WorkspaceFileRegistryRecord:
+    registry_id: str
+    owner_scope_hash: str
+    alias: str
+    document_id: str
+    title: str
+    version_id: str | None = None
+    source_name: str | None = None
+    workspace_id: str | None = None
+    workspace_name: str | None = None
+    workspace_type: str | None = None
+    document_category: str | None = None
+    workspace_confidence: str | None = None
+    workspace_needs_user_confirmation: bool | None = None
+    content_evidence_status: str = "unknown"
+    retrieval_ready: bool = False
+    source: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True)
 class DocumentScopeDecision:
     filters: dict[str, Any]
     trace: dict[str, Any]
@@ -108,6 +130,8 @@ class SessionDocumentScopeStore:
         self._alias_continuity: dict[str, dict[str, list[FileAliasBinding]]] = {}
         self._alias_continuity_ephemeral: dict[str, dict[str, list[FileAliasBinding]]] = {}
         self._continuity_owners: dict[str, tuple[str, str, bool]] = {}
+        self._file_registry: dict[str, dict[str, list[WorkspaceFileRegistryRecord]]] = {}
+        self._file_registry_owners: dict[str, tuple[str, str, bool]] = {}
         self._load()
 
     def get(self, session_id: str) -> DocumentScopeState:
@@ -158,6 +182,122 @@ class SessionDocumentScopeStore:
         if registered:
             return registered
         return self._fallback_continuity_owner_key(session_key or ""), "process_local_fallback", False
+
+    def set_file_registry_owner(
+        self,
+        *,
+        session_id: str,
+        owner_value: str | None,
+        owner_source: str | None,
+        persistent: bool = True,
+    ) -> dict[str, Any]:
+        """Register the owner scope used by the cross-session workspace file registry.
+
+        The raw owner value is hashed immediately and is never persisted. Unlike
+        alias continuity, this registry has no TTL because it represents a file
+        locator, not conversational memory.
+        """
+
+        session_key = session_id or ""
+        source = str(owner_source or "").strip() or "process_local_fallback"
+        raw_owner = str(owner_value or "").strip()
+        if raw_owner:
+            owner_key = self._stable_continuity_owner_key(raw_owner, source)
+            is_persistent = bool(persistent)
+        else:
+            owner_key = self._fallback_continuity_owner_key(session_key)
+            source = "process_local_fallback"
+            is_persistent = False
+        self._file_registry_owners[session_key] = (owner_key, source, is_persistent)
+        return {
+            "workspace_file_registry_owner_source": source,
+            "workspace_file_registry_persistent": is_persistent,
+            "workspace_file_registry_owner_missing": source == "process_local_fallback" and not is_persistent,
+        }
+
+    def _file_registry_owner_context(self, session_key: str) -> tuple[str, str, bool]:
+        registered = self._file_registry_owners.get(session_key or "")
+        if registered:
+            return registered
+        return self._fallback_continuity_owner_key(session_key or ""), "process_local_fallback", False
+
+    def remember_workspace_file_registry(
+        self,
+        *,
+        session_id: str,
+        alias: str,
+        document_id: str,
+        version_id: str | None = None,
+        title: str | None = None,
+        source_name: str | None = None,
+        workspace_context: dict[str, Any] | None = None,
+        content_evidence_status: str = "unknown",
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        session_key = session_id or ""
+        normalized_alias = self._normalize_alias(alias)
+        safe_title = self._safe_file_candidate_text(title) or str(document_id)
+        safe_source_name = self._safe_file_candidate_text(source_name)
+        owner_key, owner_source, owner_persistent = self._file_registry_owner_context(session_key)
+        evidence_status = str(content_evidence_status or "unknown").strip().lower() or "unknown"
+        retrieval_ready = evidence_status in {"indexed", "ready", "retrieval_ready"}
+        if not normalized_alias or not document_id or not owner_persistent:
+            return {
+                "workspace_file_registry_status": "not_stored",
+                "workspace_file_registry_owner_source": owner_source,
+                "workspace_file_registry_persistent": owner_persistent,
+                "workspace_file_registry_owner_missing": owner_source == "process_local_fallback" and not owner_persistent,
+                "content_evidence_status": evidence_status,
+                "retrieval_ready": retrieval_ready,
+            }
+
+        now = self._now()
+        registry_id = sha256(
+            f"{owner_key}:{normalized_alias}:{document_id}:{version_id or ''}".encode("utf-8")
+        ).hexdigest()[:24]
+        workspace = workspace_context if isinstance(workspace_context, dict) else {}
+        record = WorkspaceFileRegistryRecord(
+            registry_id=registry_id,
+            owner_scope_hash=owner_key,
+            alias=normalized_alias,
+            document_id=str(document_id),
+            version_id=str(version_id) if version_id else None,
+            title=safe_title,
+            source_name=safe_source_name,
+            workspace_id=str(workspace["workspace_id"]) if workspace.get("workspace_id") else None,
+            workspace_name=str(workspace["workspace_name"]) if workspace.get("workspace_name") else None,
+            workspace_type=str(workspace["workspace_type"]) if workspace.get("workspace_type") else None,
+            document_category=str(workspace["document_category"]) if workspace.get("document_category") else None,
+            workspace_confidence=str(workspace["confidence"]) if workspace.get("confidence") else None,
+            workspace_needs_user_confirmation=(
+                bool(workspace["needs_user_confirmation"])
+                if workspace.get("needs_user_confirmation") is not None
+                else None
+            ),
+            content_evidence_status=evidence_status,
+            retrieval_ready=retrieval_ready,
+            source=str(source) if source else None,
+            created_at=now,
+            updated_at=now,
+        )
+        owner_aliases = self._file_registry.setdefault(owner_key, {})
+        existing = [
+            item
+            for item in owner_aliases.setdefault(normalized_alias, [])
+            if not (item.document_id == record.document_id and item.version_id == record.version_id)
+        ]
+        existing.insert(0, record)
+        owner_aliases[normalized_alias] = existing[: self._MAX_CONTINUITY_BINDINGS_PER_ALIAS]
+        self._save()
+        return {
+            "workspace_file_registry_status": "stored",
+            "workspace_file_registry_owner_source": owner_source,
+            "workspace_file_registry_persistent": owner_persistent,
+            "registry_id": registry_id,
+            "owner_scope_hash": owner_key,
+            "content_evidence_status": evidence_status,
+            "retrieval_ready": retrieval_ready,
+        }
 
     def _continuity_expires_at(self) -> str:
         return (datetime.now(timezone.utc) + timedelta(seconds=self._ALIAS_CONTINUITY_TTL_SECONDS)).isoformat()
@@ -595,6 +735,26 @@ class SessionDocumentScopeStore:
             alias: (binding, "session_alias")
             for alias, binding in self._session_aliases(session_key).items()
         }
+        registry_owner_key, _, registry_owner_persistent = self._file_registry_owner_context(session_key)
+        if registry_owner_persistent:
+            for alias in list(self._file_registry.get(registry_owner_key, {}).keys()):
+                normalized_alias = self._normalize_alias(alias)
+                if normalized_alias in bindings:
+                    continue
+                records = self._file_registry_candidates(
+                    owner_key=registry_owner_key,
+                    alias=normalized_alias,
+                    retrieval_ready_only=True,
+                )
+                unique: dict[tuple[str, str | None], WorkspaceFileRegistryRecord] = {
+                    (record.document_id, record.version_id): record
+                    for record in records
+                }
+                if len(unique) == 1:
+                    bindings[normalized_alias] = (
+                        self._file_registry_record_to_binding(next(iter(unique.values()))),
+                        "workspace_file_registry",
+                    )
         owner_key, _, owner_persistent = self._continuity_owner_context(session_key)
         registry = self._alias_continuity if owner_persistent else self._alias_continuity_ephemeral
         for alias in list(registry.get(owner_key, {}).keys()):
@@ -615,6 +775,8 @@ class SessionDocumentScopeStore:
         return bindings
 
     def _file_discovery_match_reason(self, score: int, source: str) -> str:
+        if source == "workspace_file_registry":
+            return "workspace_file_registry_fuzzy_match" if score > 0 else "single_workspace_file_registry_candidate"
         if source == "alias_continuity":
             return "alias_continuity_fuzzy_match" if score > 0 else "single_alias_continuity_candidate"
         return "session_alias_fuzzy_match" if score > 0 else "single_session_alias_candidate"
@@ -904,6 +1066,14 @@ class SessionDocumentScopeStore:
             )
             if continuity_decision is not None:
                 return continuity_decision
+            registry_decision = self._resolve_file_registry_reference(
+                session_key=session_key,
+                filters=filters,
+                state=state,
+                alias=normalized_alias,
+            )
+            if registry_decision is not None:
+                return registry_decision
             return self._decision(
                 filters=filters,
                 state=state,
@@ -925,6 +1095,7 @@ class SessionDocumentScopeStore:
                     "alias_continuity_persistent": owner_persistent,
                     "api_session_key_source": "document_scope_session_id",
                     "stable_owner_missing": owner_source == "process_local_fallback" and not owner_persistent,
+                    "workspace_file_registry_status": "not_found",
                 },
             )
 
@@ -1066,6 +1237,110 @@ class SessionDocumentScopeStore:
             },
         )
 
+    def _resolve_file_registry_reference(
+        self,
+        *,
+        session_key: str,
+        filters: dict[str, Any],
+        state: DocumentScopeState,
+        alias: str,
+    ) -> DocumentScopeDecision | None:
+        owner_key, owner_source, owner_persistent = self._file_registry_owner_context(session_key)
+        records = self._file_registry_candidates(owner_key=owner_key, alias=alias)
+        if not records:
+            return None
+
+        unique: dict[tuple[str, str | None], WorkspaceFileRegistryRecord] = {}
+        for record in records:
+            unique[(record.document_id, record.version_id)] = record
+
+        if len(unique) != 1:
+            safe_candidates = [self._safe_file_registry_candidate(record) for record in unique.values()]
+            return self._decision(
+                filters=filters,
+                state=state,
+                source="workspace_file_registry",
+                status="workspace_file_registry_conflict",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                alias_trace=self._alias_trace(
+                    status="workspace_file_registry_conflict",
+                    alias=alias,
+                    alias_missing=False,
+                    alias_conflict=True,
+                    alias_scope="workspace_file_registry",
+                ),
+                suppress_retrieval=True,
+                extra_trace={
+                    "workspace_file_registry_status": "multiple_candidates",
+                    "workspace_file_registry_owner_source": owner_source,
+                    "workspace_file_registry_persistent": owner_persistent,
+                    "file_discovery_requires_clarification": True,
+                    "file_candidates": safe_candidates,
+                    "alias_candidates": safe_candidates,
+                    "requires_retrieval_evidence": True,
+                    "missing_evidence_policy": "Missing Evidence",
+                },
+            )
+
+        record = next(iter(unique.values()))
+        binding = self._file_registry_record_to_binding(record)
+        alias_trace = self._alias_trace(
+            status="alias_resolved" if record.retrieval_ready else "registry_evidence_missing",
+            alias=alias,
+            binding=binding,
+            alias_scope="workspace_file_registry",
+        )
+        extra_trace = {
+            "workspace_file_registry_status": "resolved" if record.retrieval_ready else "evidence_missing",
+            "workspace_file_registry_owner_source": owner_source,
+            "workspace_file_registry_persistent": owner_persistent,
+            "registry_id": record.registry_id,
+            "owner_scope_hash": record.owner_scope_hash,
+            "content_evidence_status": record.content_evidence_status,
+            "retrieval_ready": record.retrieval_ready,
+            "requires_retrieval_evidence": True,
+            "missing_evidence_policy": "Missing Evidence",
+        }
+        if not record.retrieval_ready:
+            return self._decision(
+                filters=filters,
+                state=state,
+                source="workspace_file_registry",
+                status="registry_evidence_missing",
+                changed=False,
+                allowed_document_ids=[],
+                cross_document_allowed=False,
+                alias_trace=alias_trace,
+                suppress_retrieval=True,
+                extra_trace=extra_trace,
+            )
+
+        self._session_aliases(session_key)[alias] = binding
+        new_state = DocumentScopeState(
+            active_document_id=binding.document_id,
+            active_document_title=binding.title,
+            active_document_version_id=binding.version_id,
+            active_project=state.active_project,
+            active_task=state.active_task,
+            scope_source="workspace_file_registry",
+            updated_at=self._now(),
+        )
+        self._states[session_key] = new_state
+        self._save()
+        return self._decision(
+            filters=self._scoped_filters(filters, binding.document_id, binding.version_id),
+            state=new_state,
+            source="workspace_file_registry",
+            status="alias_resolved",
+            changed=state.active_document_id != binding.document_id,
+            allowed_document_ids=[binding.document_id],
+            cross_document_allowed=False,
+            alias_trace=alias_trace,
+            extra_trace=extra_trace,
+        )
+
     def _resolve_alias_compare(
         self,
         *,
@@ -1075,7 +1350,11 @@ class SessionDocumentScopeStore:
         aliases: list[str],
     ) -> DocumentScopeDecision:
         normalized_aliases = [self._normalize_alias(alias) for alias in aliases]
-        bindings = [self._get_alias(session_key, alias) for alias in normalized_aliases]
+        bindings = [
+            self._get_alias(session_key, alias)
+            or self._file_registry_binding_for_session(session_key=session_key, alias=alias)
+            for alias in normalized_aliases
+        ]
         missing_aliases = [alias for alias, binding in zip(normalized_aliases, bindings) if binding is None]
         if missing_aliases:
             return self._decision(
@@ -1128,16 +1407,18 @@ class SessionDocumentScopeStore:
         compare_bindings: list[FileAliasBinding] | None = None,
         missing_aliases: list[str] | None = None,
         bind_failure_reason: str | None = None,
+        alias_scope: str | None = None,
     ) -> dict[str, Any]:
         resolved_document_id = binding.document_id if binding else None
         resolved_title = binding.title if binding else None
+        resolved_alias_scope = alias_scope or (binding.alias_scope if binding else "session")
         trace: dict[str, Any] = {
             "alias_resolution": {
                 "status": status,
                 "alias": alias,
                 "resolved_document_id": resolved_document_id,
                 "resolved_title": resolved_title,
-                "alias_scope": "session",
+                "alias_scope": resolved_alias_scope,
                 "alias_conflict": alias_conflict,
                 "alias_missing": alias_missing,
                 "alias_stale_version": alias_stale_version,
@@ -1146,7 +1427,7 @@ class SessionDocumentScopeStore:
             "alias": alias,
             "resolved_document_id": resolved_document_id,
             "resolved_title": resolved_title,
-            "alias_scope": "session",
+            "alias_scope": resolved_alias_scope,
             "alias_conflict": alias_conflict,
             "alias_missing": alias_missing,
             "alias_stale_version": alias_stale_version,
@@ -1409,6 +1690,71 @@ class SessionDocumentScopeStore:
             "alias_continuity_owner_source": binding.continuity_owner_source,
         }
 
+    def _file_registry_candidates(
+        self,
+        *,
+        owner_key: str,
+        alias: str,
+        retrieval_ready_only: bool = False,
+    ) -> list[WorkspaceFileRegistryRecord]:
+        normalized_alias = self._normalize_alias(alias)
+        records = list(self._file_registry.get(owner_key, {}).get(normalized_alias, []))
+        if retrieval_ready_only:
+            records = [record for record in records if record.retrieval_ready]
+        return records
+
+    def _file_registry_record_to_binding(self, record: WorkspaceFileRegistryRecord) -> FileAliasBinding:
+        return FileAliasBinding(
+            alias=record.alias,
+            document_id=record.document_id,
+            title=record.title,
+            version_id=record.version_id,
+            source_name=record.source_name,
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            workspace_type=record.workspace_type,
+            document_category=record.document_category,
+            workspace_confidence=record.workspace_confidence,
+            workspace_needs_user_confirmation=record.workspace_needs_user_confirmation,
+            alias_scope="workspace_file_registry",
+            scope_source="workspace_file_registry",
+            updated_at=record.updated_at,
+        )
+
+    def _file_registry_binding_for_session(self, *, session_key: str, alias: str) -> FileAliasBinding | None:
+        owner_key, _, owner_persistent = self._file_registry_owner_context(session_key)
+        if not owner_persistent:
+            return None
+        records = self._file_registry_candidates(owner_key=owner_key, alias=alias, retrieval_ready_only=True)
+        unique: dict[tuple[str, str | None], WorkspaceFileRegistryRecord] = {
+            (record.document_id, record.version_id): record
+            for record in records
+        }
+        if len(unique) != 1:
+            return None
+        binding = self._file_registry_record_to_binding(next(iter(unique.values())))
+        self._session_aliases(session_key)[self._normalize_alias(alias)] = binding
+        return binding
+
+    def _safe_file_registry_candidate(self, record: WorkspaceFileRegistryRecord) -> dict[str, Any]:
+        return {
+            "alias": record.alias,
+            "document_id": record.document_id,
+            "version_id": record.version_id,
+            "title": record.title,
+            "source_name": record.source_name,
+            "workspace_id": record.workspace_id,
+            "workspace_name": record.workspace_name,
+            "workspace_type": record.workspace_type,
+            "document_category": record.document_category,
+            "workspace_confidence": record.workspace_confidence,
+            "workspace_needs_user_confirmation": record.workspace_needs_user_confirmation,
+            "content_evidence_status": record.content_evidence_status,
+            "retrieval_ready": record.retrieval_ready,
+            "registry_id": record.registry_id,
+            "match_reason": "workspace_file_registry_candidate",
+        }
+
     def _workspace_binding_kwargs(self, trace: dict[str, Any]) -> dict[str, Any]:
         workspace_context = trace.get("workspace_context") if isinstance(trace, dict) else None
         if not isinstance(workspace_context, dict):
@@ -1542,6 +1888,13 @@ class SessionDocumentScopeStore:
                 "alias_continuity_owner_source",
                 "alias_continuity_persistent",
                 "stable_owner_missing",
+                "workspace_file_registry_status",
+                "workspace_file_registry_owner_source",
+                "workspace_file_registry_persistent",
+                "content_evidence_status",
+                "retrieval_ready",
+                "requires_retrieval_evidence",
+                "missing_evidence_policy",
             ):
                 if key in trace:
                     trace["alias_resolution"][key] = trace[key]
@@ -1623,6 +1976,7 @@ class SessionDocumentScopeStore:
         states = raw.get("states") if isinstance(raw, dict) else {}
         aliases = raw.get("aliases") if isinstance(raw, dict) else {}
         alias_continuity = raw.get("alias_continuity") if isinstance(raw, dict) else {}
+        file_registry = raw.get("file_registry") if isinstance(raw, dict) else {}
         if isinstance(states, dict):
             for session_id, state in states.items():
                 if isinstance(state, dict):
@@ -1719,6 +2073,63 @@ class SessionDocumentScopeStore:
                         loaded_aliases[normalized_alias] = continuity_bindings
                 if loaded_aliases:
                     self._alias_continuity[safe_owner_key] = loaded_aliases
+        if isinstance(file_registry, dict):
+            for owner_key, owner_aliases in file_registry.items():
+                if not isinstance(owner_aliases, dict):
+                    continue
+                safe_owner_key = str(owner_key)
+                loaded_aliases: dict[str, list[WorkspaceFileRegistryRecord]] = {}
+                for alias, records in owner_aliases.items():
+                    if not isinstance(records, list):
+                        continue
+                    normalized_alias = self._normalize_alias(str(alias))
+                    loaded_records: list[WorkspaceFileRegistryRecord] = []
+                    for record in records[: self._MAX_CONTINUITY_BINDINGS_PER_ALIAS]:
+                        if not isinstance(record, dict) or not record.get("document_id"):
+                            continue
+                        registry_id = str(
+                            record.get("registry_id")
+                            or sha256(
+                                f"{safe_owner_key}:{normalized_alias}:{record.get('document_id')}:{record.get('version_id') or ''}".encode(
+                                    "utf-8"
+                                )
+                            ).hexdigest()[:24]
+                        )
+                        evidence_status = str(record.get("content_evidence_status") or "unknown")
+                        loaded_records.append(
+                            WorkspaceFileRegistryRecord(
+                                registry_id=registry_id,
+                                owner_scope_hash=str(record.get("owner_scope_hash") or safe_owner_key),
+                                alias=normalized_alias,
+                                document_id=str(record["document_id"]),
+                                title=str(record.get("title") or record["document_id"]),
+                                version_id=str(record["version_id"]) if record.get("version_id") else None,
+                                source_name=str(record["source_name"]) if record.get("source_name") else None,
+                                workspace_id=str(record["workspace_id"]) if record.get("workspace_id") else None,
+                                workspace_name=str(record["workspace_name"]) if record.get("workspace_name") else None,
+                                workspace_type=str(record["workspace_type"]) if record.get("workspace_type") else None,
+                                document_category=str(record["document_category"])
+                                if record.get("document_category")
+                                else None,
+                                workspace_confidence=str(record["workspace_confidence"])
+                                if record.get("workspace_confidence")
+                                else None,
+                                workspace_needs_user_confirmation=(
+                                    bool(record["workspace_needs_user_confirmation"])
+                                    if record.get("workspace_needs_user_confirmation") is not None
+                                    else None
+                                ),
+                                content_evidence_status=evidence_status,
+                                retrieval_ready=bool(record.get("retrieval_ready", evidence_status == "indexed")),
+                                source=str(record["source"]) if record.get("source") else None,
+                                created_at=str(record["created_at"]) if record.get("created_at") else None,
+                                updated_at=str(record["updated_at"]) if record.get("updated_at") else None,
+                            )
+                        )
+                    if loaded_records:
+                        loaded_aliases[normalized_alias] = loaded_records
+                if loaded_aliases:
+                    self._file_registry[safe_owner_key] = loaded_aliases
 
     def _save(self) -> None:
         if not self._storage_path:
@@ -1750,6 +2161,15 @@ class SessionDocumentScopeStore:
                 for session_id, bindings in self._aliases.items()
             },
             "alias_continuity": persistent_continuity,
+            "file_registry": {
+                owner_key: {
+                    alias: [asdict(record) for record in records]
+                    for alias, records in owner_aliases.items()
+                    if records
+                }
+                for owner_key, owner_aliases in self._file_registry.items()
+                if any(owner_aliases.values())
+            },
         }
         try:
             self._storage_path.parent.mkdir(parents=True, exist_ok=True)

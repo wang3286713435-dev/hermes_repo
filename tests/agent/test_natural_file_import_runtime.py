@@ -949,6 +949,110 @@ def test_run_agent_restores_import_alias_continuity_in_new_agent_instance(tmp_pa
     assert decision.filters["version_id"] == "ver-runtime"
 
 
+def test_run_agent_restores_workspace_file_registry_across_new_conversation_same_user(tmp_path):
+    storage_path = tmp_path / "scope.json"
+    import_agent = object.__new__(AIAgent)
+    import_agent.session_id = "api-conversation-a"
+    import_agent._gateway_session_key = "openwebui-conversation-a"
+    import_agent._user_id = "enterprise-user-1"
+    import_agent.platform = "openwebui"
+    import_agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    import_agent._memory_kernel.document_scope._storage_path = storage_path
+    diagnostics = {
+        "ingestion_status": "upload_succeeded",
+        "document_id": "doc-runtime",
+        "version_id": "ver-runtime",
+        "chunk_count": 4,
+        "indexed_count": 4,
+        "import_source_path": "/Users/alice/private/测试文件.docx",
+        "alias_resolution": {
+            "status": "alias_seeded",
+            "alias": "测试文件",
+            "resolved_document_id": "doc-runtime",
+            "resolved_version_id": "ver-runtime",
+        },
+        "workspace_context": {
+            "workspace_name": "测试项目",
+            "workspace_type": "project",
+            "document_category": "方案",
+            "confidence": "high",
+            "needs_user_confirmation": False,
+        },
+    }
+
+    import_agent._persist_natural_import_alias(diagnostics)
+    followup_agent = object.__new__(AIAgent)
+    followup_agent.session_id = "api-conversation-b"
+    followup_agent._gateway_session_key = "openwebui-conversation-b"
+    followup_agent._user_id = "enterprise-user-1"
+    followup_agent.platform = "openwebui"
+    followup_agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    followup_agent._memory_kernel.document_scope._storage_path = storage_path
+    followup_agent._memory_kernel.document_scope._load()
+    followup_agent._register_alias_continuity_owner()
+    followup_agent._register_workspace_file_registry_owner()
+    decision = followup_agent._memory_kernel.resolve_document_scope(
+        session_id="api-conversation-b",
+        query="围绕 @测试文件 回答，必须给出 citation",
+        filters={},
+    )
+
+    assert diagnostics["workspace_file_registry_status"] == "stored"
+    assert diagnostics["content_evidence_status"] == "indexed"
+    assert decision.suppress_retrieval is False
+    assert decision.filters["document_id"] == "doc-runtime"
+    assert decision.filters["version_id"] == "ver-runtime"
+    assert decision.trace["workspace_file_registry_status"] == "resolved"
+    assert decision.trace["alias_resolution"]["alias_scope"] == "workspace_file_registry"
+
+
+def test_run_agent_workspace_file_registry_different_user_does_not_restore_alias(tmp_path):
+    storage_path = tmp_path / "scope.json"
+    import_agent = object.__new__(AIAgent)
+    import_agent.session_id = "api-conversation-a"
+    import_agent._gateway_session_key = "openwebui-conversation-a"
+    import_agent._user_id = "enterprise-user-1"
+    import_agent.platform = "openwebui"
+    import_agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    import_agent._memory_kernel.document_scope._storage_path = storage_path
+    diagnostics = {
+        "ingestion_status": "upload_succeeded",
+        "document_id": "doc-runtime",
+        "version_id": "ver-runtime",
+        "chunk_count": 4,
+        "indexed_count": 4,
+        "import_source_path": "/Users/alice/private/测试文件.docx",
+        "alias_resolution": {
+            "status": "alias_seeded",
+            "alias": "测试文件",
+            "resolved_document_id": "doc-runtime",
+            "resolved_version_id": "ver-runtime",
+        },
+    }
+
+    import_agent._persist_natural_import_alias(diagnostics)
+    followup_agent = object.__new__(AIAgent)
+    followup_agent.session_id = "api-conversation-b"
+    followup_agent._gateway_session_key = "openwebui-conversation-b"
+    followup_agent._user_id = "enterprise-user-2"
+    followup_agent.platform = "openwebui"
+    followup_agent._memory_kernel = MemoryKernel(MemoryKernelConfig(enabled=True, inject_context=True))
+    followup_agent._memory_kernel.document_scope._storage_path = storage_path
+    followup_agent._memory_kernel.document_scope._load()
+    followup_agent._register_workspace_file_registry_owner()
+    decision = followup_agent._memory_kernel.resolve_document_scope(
+        session_id="api-conversation-b",
+        query="围绕 @测试文件 回答，必须给出 citation",
+        filters={},
+    )
+
+    assert diagnostics["workspace_file_registry_status"] == "stored"
+    assert decision.suppress_retrieval is True
+    assert "document_id" not in decision.filters
+    assert decision.trace["scope_resolution_status"] == "alias_missing"
+    assert decision.trace["workspace_file_registry_status"] == "not_found"
+
+
 def test_run_agent_preserves_requested_natural_alias_for_followup_restore(tmp_path):
     response = maybe_handle_natural_file_import(
         "请上传 /tmp/系统生成名.xlsx 到企业记忆，别名设为 @建筑类数据样表",

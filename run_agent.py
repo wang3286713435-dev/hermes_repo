@@ -3008,6 +3008,9 @@ class AIAgent:
         continuity_owner = self._register_alias_continuity_owner()
         if continuity_owner:
             decision.trace.update(continuity_owner)
+        registry_owner = self._register_workspace_file_registry_owner()
+        if registry_owner:
+            decision.trace.update(registry_owner)
         updated_decision = self._memory_kernel.document_scope.finalize_pending_alias_binding(
             session_id=self.session_id or "",
             decision=decision,
@@ -3057,6 +3060,82 @@ class AIAgent:
             diagnostics.get("api_session_key_source") or api_session_key_source
         )
         self._verify_natural_import_alias_binding(diagnostics)
+        self._persist_natural_import_file_registry(diagnostics)
+
+    def _natural_import_content_evidence_status(self, diagnostics: Dict[str, Any]) -> str:
+        if diagnostics.get("ingestion_status") != "upload_succeeded":
+            return "missing"
+        indexed_count = diagnostics.get("indexed_count")
+        chunk_count = diagnostics.get("chunk_count")
+        try:
+            if indexed_count is not None and int(indexed_count) > 0:
+                return "indexed"
+            if chunk_count is not None and int(chunk_count) > 0:
+                return "indexed"
+        except Exception:
+            pass
+        # Older test doubles and upload paths do not always report counts; a
+        # passed post-bind verification is enough to mark the registry locator
+        # retrieval-ready while still requiring citations at answer time.
+        if diagnostics.get("post_import_alias_verification_status") == "passed":
+            return "indexed"
+        return "missing"
+
+    def _persist_natural_import_file_registry(self, diagnostics: Dict[str, Any]) -> None:
+        if diagnostics.get("post_import_alias_verification_status") != "passed":
+            diagnostics["workspace_file_registry_status"] = "not_stored"
+            diagnostics["workspace_file_registry_not_stored_reason"] = "post_bind_verification_not_passed"
+            return
+        if not self._memory_kernel or not hasattr(self._memory_kernel, "document_scope"):
+            diagnostics["workspace_file_registry_status"] = "not_stored"
+            diagnostics["workspace_file_registry_not_stored_reason"] = "memory_kernel_unavailable"
+            return
+        document_scope = getattr(self._memory_kernel, "document_scope", None)
+        if not hasattr(document_scope, "remember_workspace_file_registry"):
+            diagnostics["workspace_file_registry_status"] = "not_stored"
+            diagnostics["workspace_file_registry_not_stored_reason"] = "registry_unavailable"
+            return
+        alias_resolution = diagnostics.get("alias_resolution")
+        if not isinstance(alias_resolution, dict):
+            diagnostics["workspace_file_registry_status"] = "not_stored"
+            diagnostics["workspace_file_registry_not_stored_reason"] = "missing_alias_resolution"
+            return
+        alias = str(alias_resolution.get("alias") or "").lstrip("@")
+        document_id = str(
+            alias_resolution.get("resolved_document_id") or diagnostics.get("document_id") or ""
+        )
+        version_id = str(
+            alias_resolution.get("resolved_version_id") or diagnostics.get("version_id") or ""
+        )
+        if not alias or not document_id:
+            diagnostics["workspace_file_registry_status"] = "not_stored"
+            diagnostics["workspace_file_registry_not_stored_reason"] = "missing_alias_or_document_id"
+            return
+        source_path = diagnostics.get("import_source_path")
+        title = (
+            diagnostics.get("import_title")
+            or (Path(str(source_path)).name if source_path else None)
+            or str(document_id)
+        )
+        self._register_workspace_file_registry_owner()
+        try:
+            registry_trace = document_scope.remember_workspace_file_registry(
+                session_id=self.session_id or "",
+                alias=alias,
+                document_id=document_id,
+                version_id=version_id or None,
+                title=str(title),
+                source_name=Path(str(source_path)).name if source_path else str(title),
+                workspace_context=diagnostics.get("workspace_context"),
+                content_evidence_status=self._natural_import_content_evidence_status(diagnostics),
+                source="natural_import_success",
+            )
+        except Exception as exc:
+            logger.warning("Natural import workspace file registry persistence failed: %s", exc)
+            diagnostics["workspace_file_registry_status"] = "not_stored"
+            diagnostics["workspace_file_registry_not_stored_reason"] = type(exc).__name__
+            return
+        diagnostics.update(registry_trace)
 
     def _set_post_import_alias_verification(
         self,
@@ -3241,6 +3320,45 @@ class AIAgent:
             )
         except Exception:
             logger.debug("Failed to register alias continuity owner", exc_info=True)
+            return {}
+
+    def _workspace_file_registry_owner(self) -> tuple[str | None, str, bool]:
+        user_id = getattr(self, "_user_id", None)
+        if user_id:
+            platform = str(getattr(self, "platform", "") or "unknown")
+            return f"{platform}:{user_id}", "user_id", True
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile = get_active_profile_name()
+            if profile:
+                return str(profile), "active_profile", True
+        except Exception:
+            pass
+        gateway_session_key = getattr(self, "_gateway_session_key", None)
+        if gateway_session_key:
+            return str(gateway_session_key), "gateway_session_key", True
+        session_id = str(getattr(self, "session_id", "") or "")
+        if session_id and not session_id.startswith("api-"):
+            return session_id, "runtime_session_id", True
+        return None, "process_local_fallback", False
+
+    def _register_workspace_file_registry_owner(self) -> dict[str, Any]:
+        if not self._memory_kernel or not hasattr(self._memory_kernel, "document_scope"):
+            return {}
+        document_scope = getattr(self._memory_kernel, "document_scope", None)
+        if not hasattr(document_scope, "set_file_registry_owner"):
+            return {}
+        owner_value, owner_source, persistent = self._workspace_file_registry_owner()
+        try:
+            return document_scope.set_file_registry_owner(
+                session_id=self.session_id or "",
+                owner_value=owner_value,
+                owner_source=owner_source,
+                persistent=persistent,
+            )
+        except Exception:
+            logger.debug("Failed to register workspace file registry owner", exc_info=True)
             return {}
 
     def _hydrate_natural_import_aliases_from_history(self, conversation_history: List[Dict] = None) -> None:
@@ -9366,6 +9484,7 @@ class AIAgent:
         if self._memory_kernel and isinstance(original_user_message, str):
             try:
                 self._register_alias_continuity_owner()
+                self._register_workspace_file_registry_owner()
                 _memory_kernel_options = {}
                 if isinstance(self.request_overrides, dict):
                     raw_options = self.request_overrides.get("memory_kernel") or {}
