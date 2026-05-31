@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
+import gateway.platforms.api_server as api_server_mod
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -86,6 +87,87 @@ def test_gateway_session_key_header_only_matches_accepted_session_owner():
 
     assert header_only_key == accepted_key
     assert header_only_source == accepted_source == "x-hermes-session-id"
+
+
+class TestEnterpriseMemoryResponseEnvelopeSanitizer:
+    def test_sanitizes_diagnostics_while_preserving_source_of_truth_flags(self):
+        payload = {
+            "choices": [{"message": {"content": "已完成，正文已清洗。"}}],
+            "hermes_diagnostics": {
+                "enterprise_memory": {
+                    "enterprise_memory_import_file_used": False,
+                    "enterprise_memory_search_used": True,
+                    "enterprise_memory_find_files_used": False,
+                    "hidden_pre_model_import_used": False,
+                    "hidden_pre_model_retrieval_used": False,
+                    "final_response_sanitized": True,
+                    "diagnostics_sanitized": False,
+                    "trace": {
+                        "source_uri": "file:///Users/Weishengsu/Desktop/hermes训练文件/敏感方案.docx",
+                        "local_path": "/Users/Weishengsu/Desktop/hermes训练文件/敏感方案.docx",
+                        "debug_text": "raw /Users/Weishengsu/Desktop/hermes训练文件/敏感方案.docx",
+                    },
+                }
+            },
+        }
+
+        sanitized = api_server_mod._sanitize_openai_response_envelope(payload)
+        envelope = json.dumps(sanitized, ensure_ascii=False)
+        assert "/Users/" not in envelope
+        assert "file://" not in envelope
+        enterprise = sanitized["hermes_diagnostics"]["enterprise_memory"]
+        assert enterprise["enterprise_memory_search_used"] is True
+        assert enterprise["hidden_pre_model_import_used"] is False
+        assert enterprise["hidden_pre_model_retrieval_used"] is False
+        assert enterprise["final_response_sanitized"] is True
+        assert enterprise["diagnostics_sanitized"] is True
+
+    def test_sanitizes_responses_output_items_and_tool_debug_payload(self):
+        payload = {
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "enterprise_memory_search",
+                    "arguments": json.dumps(
+                        {
+                            "query": "查企业文件",
+                            "path": "/Users/Weishengsu/Desktop/hermes训练文件/敏感方案.docx",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "call_id": "call_enterprise",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_enterprise",
+                    "output": json.dumps(
+                        {
+                            "tool": "enterprise_memory_search",
+                            "source_uri": "file:///Users/Weishengsu/Desktop/hermes训练文件/敏感方案.docx",
+                            "message": "raw /Users/Weishengsu/Desktop/hermes训练文件/敏感方案.docx",
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "metadata": {
+                "hermes_diagnostics": {
+                    "enterprise_memory": {
+                        "enterprise_memory_search_used": True,
+                        "final_response_sanitized": True,
+                        "diagnostics_sanitized": False,
+                    }
+                }
+            },
+        }
+
+        sanitized = api_server_mod._sanitize_openai_response_envelope(payload)
+        envelope = json.dumps(sanitized, ensure_ascii=False)
+        assert "/Users/" not in envelope
+        assert "file://" not in envelope
+        enterprise = sanitized["metadata"]["hermes_diagnostics"]["enterprise_memory"]
+        assert enterprise["enterprise_memory_search_used"] is True
+        assert enterprise["diagnostics_sanitized"] is True
 
 
 def test_header_only_hermes_session_owner_restores_import_alias_continuity():
@@ -1043,7 +1125,6 @@ class TestChatCompletionsEndpoint:
                     session_ids.append(mock_run.call_args.kwargs["session_id"])
 
         assert session_ids[0] != session_ids[1]
-
 
 # ---------------------------------------------------------------------------
 # _derive_chat_session_id unit tests

@@ -46,6 +46,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from agent.memory_kernel.natural_file_import_runtime import sanitize_user_visible_storage_paths
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,50 @@ _ENTERPRISE_MEMORY_TOOL_NAMES = frozenset({
     "enterprise_memory_find_files",
     "enterprise_memory_resolve_alias",
 })
+_ENVELOPE_UNSAFE_PATH_KEYS = frozenset({
+    "path",
+    "source_path",
+    "source_uri",
+    "storage_path",
+    "storage_uri",
+    "raw_path",
+    "local_path",
+    "absolute_path",
+    "nas_path",
+})
+_ENTERPRISE_MEMORY_DIAGNOSTIC_FLAG_KEYS = frozenset({
+    "enterprise_memory_import_file_used",
+    "enterprise_memory_search_used",
+    "enterprise_memory_find_files_used",
+    "hidden_pre_model_import_used",
+    "hidden_pre_model_retrieval_used",
+    "final_response_sanitized",
+    "diagnostics_sanitized",
+})
+
+
+def _mark_enterprise_memory_diagnostics_sanitized(payload: Dict[str, Any]) -> None:
+    if _ENTERPRISE_MEMORY_DIAGNOSTIC_FLAG_KEYS & set(payload):
+        payload["diagnostics_sanitized"] = True
+
+
+def _sanitize_openai_response_envelope(value: Any) -> Any:
+    """Sanitize the complete OpenAI-compatible response envelope before egress."""
+    if isinstance(value, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, nested_value in value.items():
+            if str(key).lower() in _ENVELOPE_UNSAFE_PATH_KEYS:
+                continue
+            sanitized[key] = _sanitize_openai_response_envelope(nested_value)
+        _mark_enterprise_memory_diagnostics_sanitized(sanitized)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_openai_response_envelope(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_openai_response_envelope(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_user_visible_storage_paths(value)
+    return value
 
 
 def _tool_call_name(tool_call: Any) -> Optional[str]:
@@ -1132,6 +1177,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "enterprise_memory": diagnostics,
             }
 
+        response_data = _sanitize_openai_response_envelope(response_data)
         return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
 
     async def _write_sse_chat_completion(
@@ -1171,6 +1217,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
+            role_chunk = _sanitize_openai_response_envelope(role_chunk)
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
 
@@ -1185,7 +1232,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation history.  See #6972.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
+                    event_data = json.dumps(_sanitize_openai_response_envelope(item[1]))
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
@@ -1195,6 +1242,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "created": created, "model": model,
                         "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
                     }
+                    content_chunk = _sanitize_openai_response_envelope(content_chunk)
                     await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
@@ -1249,6 +1297,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 finish_chunk["hermes_diagnostics"] = {
                     "enterprise_memory": diagnostics,
                 }
+            finish_chunk = _sanitize_openai_response_envelope(finish_chunk)
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
@@ -1357,6 +1406,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
+            data = _sanitize_openai_response_envelope(data)
             payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
             await response.write(payload.encode())
 
@@ -1646,6 +1696,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             "enterprise_memory": diagnostics,
                         }
                     }
+                failed_env = _sanitize_openai_response_envelope(failed_env)
                 await _write_event("response.failed", {
                     "type": "response.failed",
                     "response": failed_env,
@@ -1665,6 +1716,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             "enterprise_memory": diagnostics,
                         }
                     }
+                completed_env = _sanitize_openai_response_envelope(completed_env)
                 await _write_event("response.completed", {
                     "type": "response.completed",
                     "response": completed_env,
@@ -1960,6 +2012,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
             }
 
+        response_data = _sanitize_openai_response_envelope(response_data)
         # Store the complete response object for future chaining / GET retrieval
         if store:
             self._response_store.put(response_id, {
@@ -1990,7 +2043,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if stored is None:
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
-        return web.json_response(stored["response"])
+        return web.json_response(_sanitize_openai_response_envelope(stored["response"]))
 
     async def _handle_delete_response(self, request: "web.Request") -> "web.Response":
         """DELETE /v1/responses/{response_id} — delete a stored response."""

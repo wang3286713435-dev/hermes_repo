@@ -326,6 +326,12 @@
 - 下一步需要 Codex B review 与 Codex C Day-1 Q1 alias/session 复验；当前不 baseline、不 tag、不 push。
 # TODO 最新状态
 
+- 当前 phase：Phase 2.121f Enterprise Memory Response Envelope Sanitization No-Go Fix 已实现并准备 runtime candidate。
+- 修复：API-server / 8642 OpenAI-compatible response envelope 在离开服务前递归清洗 diagnostics、trace、context refs、tool debug payload 与 Responses output items，避免 final text 已清洗但 envelope 仍泄露 raw path。
+- 保留审计旗标：`enterprise_memory_import_file_used`、`enterprise_memory_search_used`、`enterprise_memory_find_files_used`、`hidden_pre_model_import_used`、`hidden_pre_model_retrieval_used`、`final_response_sanitized`、`diagnostics_sanitized`；diagnostics 清洗后强制 `diagnostics_sanitized=true`。
+- 验证：py_compile 通过；新增 API-server envelope sanitizer tests 通过；enterprise memory/session scope `95 passed`；natural import regression `95 passed`；`git diff --check` 通过。
+- 下一步：生成 `phase-2.121f-enterprise-memory-envelope-sanitizer-runtime-candidate`，交 Codex B review；不要直接发测试机。
+
 - 当前 phase：Phase 2.112f Alias Continuity Restore Fix 已实现，待 Codex B review 与测试机 OpenWebUI / 8642 复验。
 - 修复：owner-scoped alias continuity restore 的 follow-up 诊断已稳定写入顶层 trace 与 `alias_resolution`；持久化 continuity 跨 store / 新 agent instance 恢复已补测试。
 - 验证：py_compile 通过；session/natural import regression `77 passed`；gateway targeted stable-owner tests `3 passed`。
