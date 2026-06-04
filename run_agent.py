@@ -12941,6 +12941,27 @@ class AIAgent:
 
         if final_response and not interrupted:
             try:
+                _post_model_attachment_boundary_response = maybe_handle_temporary_attachment_boundary(
+                    original_user_message
+                )
+                if (
+                    _post_model_attachment_boundary_response is not None
+                    and not self._has_imported_file_scope_for_query(original_user_message)
+                ):
+                    final_response = sanitize_user_visible_storage_paths(
+                        _post_model_attachment_boundary_response.final_response
+                    )
+                    _final_response_sanitizer_ran = True
+                    for _msg in reversed(messages):
+                        if isinstance(_msg, dict) and _msg.get("role") == "assistant" and not _msg.get("tool_calls"):
+                            _msg["content"] = final_response
+                            break
+                    logger.info("Temporary attachment boundary guard replaced final response")
+            except Exception as exc:
+                logger.warning("Temporary attachment boundary guard failed: %s", exc)
+
+        if final_response and not interrupted:
+            try:
                 _sanitized_response = sanitize_user_visible_storage_paths(final_response)
                 _final_response_sanitizer_ran = True
                 if _sanitized_response != final_response:
