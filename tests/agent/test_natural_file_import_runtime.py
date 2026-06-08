@@ -212,6 +212,31 @@ def test_temporary_attachment_boundary_does_not_intercept_explicit_import():
     assert response is None
 
 
+def test_temporary_attachment_boundary_detects_openwebui_content_list_attachment():
+    response = maybe_handle_temporary_attachment_boundary(
+        [
+            {"type": "text", "text": "它现在有别名或工作区吗？"},
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/preview.png"}},
+        ]
+    )
+
+    assert response is not None
+    assert response.diagnostics["temporary_attachment_boundary"] is True
+    assert response.diagnostics["temporary_attachment_live_shape_detected"] is True
+    assert "是否要我现在把它导入 Hermes 记忆库" in response.final_response
+
+
+def test_temporary_attachment_boundary_does_not_intercept_explicit_content_list_import():
+    response = maybe_handle_temporary_attachment_boundary(
+        [
+            {"type": "text", "text": "请导入它，并设为 @临时文件"},
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/preview.png"}},
+        ]
+    )
+
+    assert response is None
+
+
 def test_api_server_natural_import_does_not_hidden_early_return(monkeypatch):
     calls = {"natural_import": 0, "api": 0}
 
@@ -283,6 +308,38 @@ def test_api_server_temporary_attachment_boundary_guards_final_response(monkeypa
     assert "/Users/" not in result["final_response"]
     assert "文件我已经保存" not in result["final_response"]
     assert "绑定为 @临时文件" not in result["final_response"]
+    assert "是否要我现在把它导入 Hermes 记忆库" in result["final_response"]
+    assert result["enterprise_memory"]["hidden_pre_model_import_used"] is False
+    assert result["enterprise_memory"]["hidden_pre_model_retrieval_used"] is False
+    assert result["enterprise_memory"]["final_response_sanitized"] is True
+
+
+def test_api_server_temporary_attachment_live_shape_guards_final_response(monkeypatch):
+    calls = {"api": 0}
+
+    def fake_api_call(api_kwargs):
+        calls["api"] += 1
+        return _fake_chat_response(
+            "这个临时上传已经保存到工作区，可用 @临时文件 继续查询："
+            "/Users/Weishengsu/Desktop/hermes训练文件/demo.docx"
+        )
+
+    agent = _make_api_server_agent()
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda name, **kwargs: [])
+    monkeypatch.setattr(agent, "_interruptible_api_call", fake_api_call)
+    monkeypatch.setattr(agent, "_interruptible_streaming_api_call", lambda api_kwargs, **kwargs: fake_api_call(api_kwargs))
+
+    result = agent.run_conversation(
+        [
+            {"type": "text", "text": "它现在有别名或工作区吗？"},
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/preview.png"}},
+        ]
+    )
+
+    assert calls["api"] == 1
+    assert "/Users/" not in result["final_response"]
+    assert "已经保存" not in result["final_response"]
+    assert "@临时文件" not in result["final_response"]
     assert "是否要我现在把它导入 Hermes 记忆库" in result["final_response"]
     assert result["enterprise_memory"]["hidden_pre_model_import_used"] is False
     assert result["enterprise_memory"]["hidden_pre_model_retrieval_used"] is False

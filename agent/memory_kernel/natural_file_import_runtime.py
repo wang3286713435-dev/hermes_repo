@@ -75,12 +75,87 @@ _SECRET_OR_INTERNAL_RE = re.compile(
 _TEMP_ATTACHMENT_REF_RE = re.compile(
     r"(这个文件|这份文件|这个附件|这份附件|附件|刚才上传|刚才拖入|刚刚上传|刚刚拖入)"
 )
+_TEMP_ATTACHMENT_LIVE_REF_RE = re.compile(
+    r"(它|刚才那个|刚才这份|刚刚那个|刚刚这份|这个文件|这份文件|这个附件|这份附件|附件|文件|刚才上传|刚才拖入|刚刚上传|刚刚拖入)"
+)
 _TEMP_ATTACHMENT_STATUS_RE = re.compile(
     r"(别名|工作区|项目|分类|保存|记住|记下|入库|收录|绑定|导入(?:了吗|没有|状态)|上传(?:了吗|没有|状态))"
 )
 _EXPLICIT_IMPORT_ACTION_RE = re.compile(
-    r"(帮我|请|麻烦)?\s*(?:导入|上传|收录|保存到|加入)\s*(?:这个文件|这份文件|这个附件|这份附件|/|file://|nas://|smb://)"
+    r"(帮我|请|麻烦)?\s*(?:导入|上传|收录|保存到|加入)\s*(?:它|这个|这份|刚才那个|刚才这份|这个文件|这份文件|这个附件|这份附件|/|file://|nas://|smb://)"
 )
+_TEMP_ATTACHMENT_CONTENT_PART_TYPES = {"image_url", "input_image", "file", "input_file"}
+_TEMP_ATTACHMENT_METADATA_KEYS = {
+    "attachment",
+    "attachments",
+    "file",
+    "files",
+    "file_id",
+    "fileid",
+    "file_name",
+    "filename",
+    "mime_type",
+    "mimetype",
+}
+_TEMP_ATTACHMENT_MARKER_RE = re.compile(
+    r"(临时附件|附件名|文件名|uploaded\s+file|temporary\s+attachment|attachment)",
+    re.IGNORECASE,
+)
+
+
+def _temporary_attachment_query_and_marker(value: Any) -> tuple[str, bool]:
+    """Extract user text and attachment markers from live multimodal shapes."""
+
+    texts: list[str] = []
+    has_attachment_marker = False
+
+    def _append_text(raw: Any) -> None:
+        if raw is None:
+            return
+        try:
+            text_value = str(raw)
+        except Exception:
+            return
+        if text_value:
+            texts.append(text_value)
+
+    def _walk(node: Any) -> None:
+        nonlocal has_attachment_marker
+        if isinstance(node, str):
+            _append_text(node)
+            return
+        if isinstance(node, list):
+            for item in node[:32]:
+                _walk(item)
+            return
+        if isinstance(node, dict):
+            lowered_keys = {str(key).strip().lower() for key in node.keys()}
+            part_type = str(node.get("type") or "").strip().lower()
+            if part_type in _TEMP_ATTACHMENT_CONTENT_PART_TYPES:
+                has_attachment_marker = True
+            if lowered_keys & _TEMP_ATTACHMENT_METADATA_KEYS:
+                has_attachment_marker = True
+
+            for key in ("text", "content", "name", "filename", "file_name", "title"):
+                raw_text = node.get(key)
+                if isinstance(raw_text, str):
+                    _append_text(raw_text)
+                elif isinstance(raw_text, (list, dict)):
+                    _walk(raw_text)
+            return
+
+        _append_text(node)
+
+    _walk(value)
+    query = "\n".join(texts).strip()
+    if not has_attachment_marker and _TEMP_ATTACHMENT_MARKER_RE.search(query):
+        has_attachment_marker = True
+    if not query and value is not None:
+        try:
+            query = str(value).strip()
+        except Exception:
+            query = ""
+    return query, has_attachment_marker
 
 
 def maybe_handle_natural_file_import(
@@ -109,7 +184,7 @@ def maybe_handle_natural_file_import(
     )
 
 
-def maybe_handle_temporary_attachment_boundary(text: str) -> NaturalFileImportRuntimeResponse | None:
+def maybe_handle_temporary_attachment_boundary(text: Any) -> NaturalFileImportRuntimeResponse | None:
     """Return a product-facing boundary for attachment metadata questions.
 
     OpenWebUI drag/drop attachments can appear in the current model turn before
@@ -118,16 +193,20 @@ def maybe_handle_temporary_attachment_boundary(text: str) -> NaturalFileImportRu
     import flow succeeds and post-bind verification passes.
     """
 
-    query = str(text or "").strip()
+    query, has_live_attachment_marker = _temporary_attachment_query_and_marker(text)
     if not query:
         return None
     if _EXPLICIT_IMPORT_ACTION_RE.search(query):
         return None
-    if not (_TEMP_ATTACHMENT_REF_RE.search(query) and _TEMP_ATTACHMENT_STATUS_RE.search(query)):
+    has_attachment_ref = bool(_TEMP_ATTACHMENT_REF_RE.search(query))
+    if has_live_attachment_marker:
+        has_attachment_ref = has_attachment_ref or bool(_TEMP_ATTACHMENT_LIVE_REF_RE.search(query))
+    if not (has_attachment_ref and _TEMP_ATTACHMENT_STATUS_RE.search(query)):
         return None
     diagnostics: dict[str, Any] = {
         "temporary_attachment_boundary": True,
         "temporary_attachment_context_only": True,
+        "temporary_attachment_live_shape_detected": bool(has_live_attachment_marker),
         "attachment_imported": False,
         "alias_bound": False,
         "workspace_bound": False,
